@@ -1,0 +1,21 @@
+#version 450
+/*
+ * Gated residual add: out[s,h] += gate[h] * proj[s,h]
+ * gate is a per-channel f32 vector (the modulation gate, broadcast over seq).
+ * One invocation per (s, h).
+ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Out  { float outp[]; };
+layout(std430, binding = 1) readonly buffer Gate { float gate[]; };
+layout(std430, binding = 2) readonly buffer Proj { float proj[]; };
+
+layout(push_constant) uniform PC { uint seq, hidden; } pc;
+
+void main() {
+    uint hh = gl_GlobalInvocationID.x;
+    uint s = gl_GlobalInvocationID.y;
+    if (s >= pc.seq || hh >= pc.hidden) return;
+    uint idx = s * pc.hidden + hh;
+    outp[idx] += gate[hh] * proj[idx];
+}

@@ -1,0 +1,814 @@
+
+#include "../global.h"
+
+bool                 ui_view2d_text_input_hover = false;
+bool                 ui_view2d_uvmap_show       = false;
+paint_tex_t          ui_view2d_tex_type         = PAINT_TEX_BASE;
+view_2d_layer_mode_t ui_view2d_layer_mode       = VIEW_2D_LAYER_MODE_SELECTED;
+bool                 ui_view2d_controls_down    = false;
+gpu_texture_t       *_ui_view2d_render_tex;
+f32                  _ui_view2d_render_x;
+f32                  _ui_view2d_render_y;
+f32                  _ui_view2d_render_tw;
+f32                  _ui_view2d_render_th;
+gpu_texture_t       *ui_view2d_grid            = NULL;
+bool                 ui_view2d_layer_touched   = false;
+gpu_texture_t       *ui_view2d_tex             = NULL;
+char                *ui_view2d_layer_name_prev = NULL;
+
+void ui_view2d_init() {
+	ui_view2d_pipe = gpu_create_pipeline();
+
+	ui_view2d_pipe->vertex_shader   = sys_get_shader("layer_view.vert");
+	ui_view2d_pipe->fragment_shader = sys_get_shader("layer_view.frag");
+	gpu_vertex_structure_t *vs      = ALLOC_INIT(gpu_vertex_structure_t, {0});
+	gpu_vertex_structure_add(vs, "pos", GPU_VERTEX_DATA_F32_2X);
+	gpu_vertex_structure_add(vs, "tex", GPU_VERTEX_DATA_F32_2X);
+	gpu_vertex_structure_add(vs, "col", GPU_VERTEX_DATA_F32_4X);
+	ui_view2d_pipe->input_layout              = vs;
+	ui_view2d_pipe->blend_source              = GPU_BLEND_ONE;
+	ui_view2d_pipe->blend_destination         = GPU_BLEND_ZERO;
+	ui_view2d_pipe->color_write_mask_alpha[0] = false;
+	gpu_pipeline_compile(ui_view2d_pipe);
+	pipes_offset = 0;
+	pipes_get_constant_location("float4"); // empty
+	ui_view2d_channel_loc = pipes_get_constant_location("int");
+}
+
+void ui_view2d_capture_output(void *_) {
+	util_texture_capture_output(ui_view2d_tex, "tex_capture", false);
+}
+
+ui_node_t *ui_view2d_get_selected_node() {
+	ui_nodes_t *nodes = ui_nodes_get_nodes();
+	if (nodes->nodes_selected_id->length == 0) {
+		return NULL;
+	}
+	ui_node_canvas_t *c = ui_nodes_get_canvas(true);
+	return ui_get_node(c->nodes, nodes->nodes_selected_id->buffer[0]);
+}
+
+void ui_view2d_play_sound() {
+	ui_view2d_stop_sound();
+	if (g_context->sound == NULL || g_context->sound->sound == NULL) {
+		return;
+	}
+#ifdef IRON_AUDIO
+	audio_play(g_context->sound->sound, false);
+#endif
+	ui_view2d_sound_playing = g_context->sound->sound;
+}
+
+void ui_view2d_stop_sound() {
+	if (ui_view2d_sound_playing == NULL) {
+		return;
+	}
+#ifdef IRON_AUDIO
+	audio_stop(ui_view2d_sound_playing);
+#endif
+	ui_view2d_sound_playing = NULL;
+}
+
+bool ui_view2d_sound_is_playing() {
+#ifdef IRON_AUDIO
+	if (ui_view2d_sound_playing != NULL && !audio_is_playing(ui_view2d_sound_playing)) {
+		ui_view2d_sound_playing = NULL;
+	}
+#endif
+	return ui_view2d_sound_playing != NULL;
+}
+
+#ifdef IRON_AUDIO
+void ui_view2d_draw_waveform(iron_a1_sound_t *sound, i32 x, i32 y, i32 w, i32 h) {
+	draw_set_color(g_theme->WINDOW_BG_COL);
+	draw_filled_rect(x, y, w, h);
+	f32 mid = y + h / 2.0;
+	draw_set_color(g_theme->BUTTON_COL);
+	draw_filled_rect(x, math_floor(mid), w, 1);
+
+	if (sound != NULL && sound->size > 0 && w > 0) {
+		i32 px0 = x < 0 ? -x : 0;
+		i32 px1 = x + w > ui_view2d_ww ? ui_view2d_ww - x : w;
+		draw_set_color(g_theme->HIGHLIGHT_COL);
+		for (i32 px = px0; px < px1; ++px) {
+			i32 s0 = (i64)px * sound->size / w;
+			i32 s1 = (i64)(px + 1) * sound->size / w;
+			if (s1 <= s0) {
+				s1 = s0 + 1;
+			}
+			i32 step = (s1 - s0) / 128 + 1;
+			i32 lo   = 0;
+			i32 hi   = 0;
+			for (i32 s = s0; s < s1; s += step) {
+				i32 v = (sound->left[s] + sound->right[s]) / 2;
+				if (v < lo) {
+					lo = v;
+				}
+				if (v > hi) {
+					hi = v;
+				}
+			}
+			f32 top = mid - hi / 32768.0 * h / 2.0;
+			f32 bot = mid - lo / 32768.0 * h / 2.0;
+			draw_filled_rect(x + px, top, 1, bot - top < 1 ? 1 : bot - top);
+		}
+	}
+	draw_set_color(0xffffffff);
+}
+#endif
+
+void ui_view2d_draw_edit() {
+	if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+		ui_check(&ui_view2d_uvmap_show, tr("UV Map"), "");
+		if (ui_item_changed()) {
+			ui_view2d_hwnd->redraws = 2;
+			ui_menu_keep_open       = true;
+		}
+	}
+
+	if (ui_view2d_type != VIEW_2D_TYPE_SOUND) {
+		ui_check(&ui_view2d_tiled_show, tr("Tiled"), "");
+		if (ui_item_changed()) {
+			ui_view2d_hwnd->redraws = 2;
+			ui_menu_keep_open       = true;
+		}
+
+		ui_menu_separator();
+
+		ui_check(&g_config->view2d_grid_snap, tr("Grid Snap"), any_map_get(g_keymap, "grid_snap"));
+		if (ui_item_changed()) {
+			ui_menu_keep_open = true;
+		}
+
+		ui_check(&g_config->view2d_grid_show, tr("Show Grid"), "");
+		if (ui_item_changed()) {
+			ui_view2d_hwnd->redraws = 2;
+			ui_menu_keep_open       = true;
+		}
+
+		ui_slider_int(&g_config->view2d_grid_cell, tr("Grid Cell"), 1.0, 256.0, true, true, UI_ALIGN_RIGHT, true);
+		bool cell_changed = ui_item_changed();
+		if (g_ui->is_hovered) {
+			ui_tooltip(tr("Cell size in pixels"));
+		}
+		if (cell_changed) {
+			ui_view2d_hwnd->redraws = 2;
+			ui_menu_keep_open       = true;
+		}
+
+		ui_menu_separator();
+	}
+
+	if (ui_menu_button(tr("Zoom to Fit"), "", ICON_NONE)) {
+		ui_view2d_pan_x         = 0.0;
+		ui_view2d_pan_y         = 0.0;
+		ui_view2d_pan_scale     = 1.0;
+		ui_view2d_hwnd->redraws = 2;
+	}
+
+	if (ui_view2d_type != VIEW_2D_TYPE_SOUND) {
+		g_ui->enabled = ui_view2d_tex != NULL;
+		if (ui_menu_button(tr("Capture Output"), "", ICON_PHOTO)) {
+			sys_notify_on_next_frame(&ui_view2d_capture_output, NULL);
+		}
+		g_ui->enabled = true;
+	}
+
+#ifdef IRON_AUDIO
+	if (ui_view2d_type == VIEW_2D_TYPE_SOUND && g_context->sound != NULL && g_context->sound->sound != NULL) {
+		iron_a1_sound_t *sound = g_context->sound->sound;
+		ui_menu_separator();
+		g_ui->enabled = false;
+		ui_text(string_tmp("%.2fs", sound->size / (float)sound->samples_per_second), UI_ALIGN_LEFT, 0x00000000);
+		ui_text(string_tmp("%d Hz, %d ch, %d bit", (int)sound->samples_per_second, sound->channel_count, sound->bits_per_sample), UI_ALIGN_LEFT, 0x00000000);
+		g_ui->enabled = true;
+	}
+#endif
+
+	if (ui_view2d_tex != NULL) {
+		ui_menu_separator();
+		g_ui->enabled = false;
+		ui_text(string_tmp("%dx%d", ui_view2d_tex->width, ui_view2d_tex->height), UI_ALIGN_LEFT, 0x00000000);
+		if (ui_view2d_type == VIEW_2D_TYPE_ASSET) {
+			asset_t *asset     = g_context->texture;
+			bool     is_packed = g_project->packed_assets != NULL && project_packed_asset_exists(g_project->packed_assets, asset->file);
+			if (is_packed) {
+				ui_text(tr("packed"), UI_ALIGN_LEFT, 0x00000000);
+			}
+		}
+		g_ui->enabled = true;
+	}
+
+	char *view_type = ui_view2d_type == VIEW_2D_TYPE_ASSET   ? tr("Asset")
+	                  : ui_view2d_type == VIEW_2D_TYPE_NODE  ? tr("Node")
+	                  : ui_view2d_type == VIEW_2D_TYPE_FONT  ? tr("Font")
+	                  : ui_view2d_type == VIEW_2D_TYPE_UVMAP ? tr("UVMap")
+	                  : ui_view2d_type == VIEW_2D_TYPE_SOUND ? tr("Sound")
+	                                                         : tr("Layer");
+
+	if (ui_view2d_type == VIEW_2D_TYPE_NODE) {
+		ui_node_t *sel = ui_view2d_get_selected_node();
+		if (sel != NULL) {
+			view_type = string_tmp("%s %s", sel->type, view_type);
+		}
+	}
+
+	g_ui->enabled = false;
+	ui_text(view_type, UI_ALIGN_LEFT, 0x00000000);
+	g_ui->enabled = true;
+}
+
+void ui_view2d_draw_image(gpu_texture_t *image, f32 dx, f32 dy, f32 dw, f32 dh, i32 channel) {
+	if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+		gpu_set_int(ui_view2d_channel_loc, channel);
+	}
+	draw_scaled_image(image, dx, dy, dw, dh);
+}
+
+void ui_view2d_render_color_pick(void *_) {
+	render_target_t *rt              = any_map_get(render_path_render_targets, "texpaint_picker");
+	gpu_texture_t   *texpaint_picker = rt->_image;
+	draw_begin(texpaint_picker, false, 0);
+	draw_scaled_image(_ui_view2d_render_tex, -_ui_view2d_render_x, -_ui_view2d_render_y, _ui_view2d_render_tw, _ui_view2d_render_th);
+	draw_end();
+	buffer_t *a = gpu_get_texture_pixels(texpaint_picker);
+#ifdef IRON_BGRA
+	i32 i0 = 2;
+	i32 i1 = 1;
+	i32 i2 = 0;
+#else
+	i32 i0 = 0;
+	i32 i1 = 1;
+	i32 i2 = 2;
+#endif
+
+	g_context->picked_color->base = color_set_rb(g_context->picked_color->base, buffer_get_u8(a, i0));
+	g_context->picked_color->base = color_set_gb(g_context->picked_color->base, buffer_get_u8(a, i1));
+	g_context->picked_color->base = color_set_bb(g_context->picked_color->base, buffer_get_u8(a, i2));
+	ui_header_handle->redraws     = 2;
+
+	if (g_context->color_picker_callback != NULL) {
+		g_context->color_picker_callback(g_context->picked_color);
+	}
+}
+
+void ui_view2d_update(void *_) {
+	f32 headerh = UI_ELEMENT_H() * 1.4;
+
+	g_context->paint2d = false;
+
+	ui_view2d_ww = g_config->layout->buffer[LAYOUT_SIZE_NODES_W];
+	ui_view2d_wx = math_floor(sys_w()) + ui_toolbar_w(true);
+	ui_view2d_wy = 0;
+
+	if (!ui_base_show) {
+		ui_view2d_ww += g_config->layout->buffer[LAYOUT_SIZE_SIDEBAR_W] + ui_toolbar_w(true);
+		ui_view2d_wx -= ui_toolbar_w(true);
+	}
+	if (!base_view3d_show) {
+		ui_view2d_ww += base_view3d_w();
+	}
+
+	ui_view2d_wh = iron_window_height() - g_config->layout->buffer[LAYOUT_SIZE_STATUS_H];
+
+	if (ui_nodes_show) {
+		ui_view2d_wh -= g_config->layout->buffer[LAYOUT_SIZE_NODES_H];
+		if (g_config->touch_ui) {
+			ui_view2d_wh += ui_header_h;
+		}
+	}
+
+	if (!base_view3d_show && ui_nodes_show) {
+		ui_view2d_wx = 0;
+		ui_view2d_ww = base_view3d_w();
+		ui_view2d_wh = iron_window_height() - g_config->layout->buffer[LAYOUT_SIZE_STATUS_H];
+	}
+
+	ui_nodes_wrap_mouse(ui_view2d_controls_down, ui_view2d_wx, ui_view2d_wy, ui_view2d_ww, ui_view2d_wh);
+
+	if (!base_ui_enabled || !ui_view2d_show || mouse_x < ui_view2d_wx || mouse_x > ui_view2d_wx + ui_view2d_ww || mouse_y < ui_view2d_wy + headerh ||
+	    mouse_y > ui_view2d_wy + ui_view2d_wh) {
+		if (ui_view2d_controls_down) {
+			ui_canvas_control_t *control = ui_nodes_get_canvas_control(ui_view2d_controls_down, false);
+			ui_view2d_controls_down      = control->controls_down;
+		}
+	}
+	else {
+
+		ui_canvas_control_t *control = ui_nodes_get_canvas_control(ui_view2d_controls_down, false);
+		ui_view2d_pan_x += control->pan_x;
+		ui_view2d_pan_y += control->pan_y;
+		ui_view2d_controls_down = control->controls_down;
+		if (control->zoom != 0.0) {
+			f32 _pan_x = ui_view2d_pan_x / (float)ui_view2d_pan_scale;
+			f32 _pan_y = ui_view2d_pan_y / (float)ui_view2d_pan_scale;
+			ui_view2d_pan_scale += control->zoom;
+			if (ui_view2d_pan_scale < 0.1) {
+				ui_view2d_pan_scale = 0.1;
+			}
+			if (ui_view2d_pan_scale > 6.0) {
+				ui_view2d_pan_scale = 6.0;
+			}
+			ui_view2d_pan_x = _pan_x * ui_view2d_pan_scale;
+			ui_view2d_pan_y = _pan_y * ui_view2d_pan_scale;
+
+			if (ui_touch_control) {
+				// Zoom to finger location
+				ui_view2d_pan_x -= (g_ui->input_x - ui_view2d_wx - ui_view2d_ww / 2.0) * control->zoom;
+				ui_view2d_pan_y -= (g_ui->input_y - ui_view2d_wy - ui_view2d_wh / 2.0) * control->zoom;
+			}
+			ui_view2d_grid_redraw = true;
+		}
+
+		bool decal_mask = context_is_decal_mask_paint();
+		bool set_clone_source =
+		    g_context->tool == TOOL_TYPE_CLONE &&
+		    keymap_shortcut(string_tmp("%s+%s", any_map_get(g_keymap, "set_clone_source"), any_map_get(g_keymap, "action_paint")), SHORTCUT_TYPE_DOWN);
+
+		if (!g_ui->input_down) {
+			ui_view2d_layer_touched = false;
+		}
+
+		bool sculpt_layer = g_context->layer->texpaint_sculpt != NULL;
+
+		if (ui_view2d_type == VIEW_2D_TYPE_LAYER && !ui_view2d_text_input_hover && !sculpt_layer &&
+		    (keymap_shortcut(any_map_get(g_keymap, "action_paint"), SHORTCUT_TYPE_DOWN) ||
+		     keymap_shortcut(string_tmp("%s+%s", any_map_get(g_keymap, "brush_ruler"), any_map_get(g_keymap, "action_paint")), SHORTCUT_TYPE_DOWN) ||
+		     decal_mask || set_clone_source || g_config->brush_live)) {
+
+			if (g_config->touch_ui) {
+				// Paint only when clicking on the layer rect
+				slot_layer_t  *layer   = g_context->layer;
+				gpu_texture_t *tex     = layer->texpaint;
+				f32            ratio   = tex->height / (float)tex->width;
+				f32            wm      = fmin(ui_view2d_ww, ui_view2d_wh);
+				f32            tw      = wm * 0.9 * ui_view2d_pan_scale;
+				f32            th      = tw * ratio;
+				f32            tx      = ui_view2d_ww / 2.0 - tw / 2.0 + ui_view2d_pan_x;
+				i32            headerh = g_config->layout->buffer[LAYOUT_SIZE_HEADER] == 1 ? ui_header_h * 2 : ui_header_h;
+				i32            apph    = iron_window_height() - g_config->layout->buffer[LAYOUT_SIZE_STATUS_H] + headerh;
+				f32            ty      = apph / 2.0 - th / 2.0 + ui_view2d_pan_y;
+				f32            mx      = mouse_x - ui_view2d_wx;
+				f32            my      = mouse_y - ui_view2d_wy;
+				if (mx > tx && mx < tx + tw && my > ty && my < ty + th) {
+					ui_view2d_layer_touched = true;
+				}
+				if (ui_view2d_layer_touched) {
+					g_context->paint2d = true;
+				}
+			}
+			else {
+				g_context->paint2d = true;
+			}
+		}
+
+		if (!g_ui->is_typing) {
+			if (keyboard_started("left")) {
+				ui_view2d_pan_x -= 5;
+			}
+			else if (keyboard_started("right")) {
+				ui_view2d_pan_x += 5;
+			}
+			if (keyboard_started("up")) {
+				ui_view2d_pan_y -= 5;
+			}
+			else if (keyboard_started("down")) {
+				ui_view2d_pan_y += 5;
+			}
+
+			if (!g_context->paint2d && g_config->touch_ui && g_ui->input_down && ui_view2d_type != VIEW_2D_TYPE_UVMAP) {
+				ui_view2d_pan_x += g_ui->input_dx;
+				ui_view2d_pan_y += g_ui->input_dy;
+			}
+
+			// Limit panning to keep texture in viewport
+			i32 border = 32;
+			f32 wm     = fmin(ui_view2d_ww, ui_view2d_wh);
+			f32 tw     = ui_view2d_ww * 0.9 * ui_view2d_pan_scale;
+			f32 tx     = ui_view2d_ww / 2.0 - tw / 2.0 + ui_view2d_pan_x;
+			f32 hh     = sys_h();
+			f32 ty     = hh / 2.0 - tw / 2.0 + ui_view2d_pan_y;
+
+			if (tx + border > ui_view2d_ww) {
+				ui_view2d_pan_x = ui_view2d_ww / 2.0 + tw / 2.0 - border;
+			}
+			else if (tx - border < -tw) {
+				ui_view2d_pan_x = -tw / 2.0 - ui_view2d_ww / 2.0 + border;
+			}
+			if (ty + border > hh) {
+				ui_view2d_pan_y = hh / 2.0 + tw / 2.0 - border;
+			}
+			else if (ty - border < -tw) {
+				ui_view2d_pan_y = -tw / 2.0 - hh / 2.0 + border;
+			}
+
+			if (keymap_shortcut(any_map_get(g_keymap, "view_reset"), SHORTCUT_TYPE_STARTED)) {
+				ui_view2d_pan_x     = 0.0;
+				ui_view2d_pan_y     = 0.0;
+				ui_view2d_pan_scale = 1.0;
+			}
+		}
+	}
+
+	// Render
+	if (!ui_view2d_show) {
+		return;
+	}
+
+	if (g_context->pdirty >= 0) {
+		ui_view2d_hwnd->redraws = 2; // Paint was active
+	}
+	if (ui_view2d_type == VIEW_2D_TYPE_SOUND && ui_view2d_sound_playing != NULL) {
+		ui_view2d_hwnd->redraws = 2;
+	}
+
+	// Cache grid
+	if (ui_view2d_grid_redraw) {
+		if (ui_view2d_grid != NULL) {
+			gpu_delete_texture(ui_view2d_grid);
+		}
+		ui_view2d_grid        = ui_nodes_draw_grid(ui_view2d_pan_scale);
+		ui_view2d_grid_redraw = false;
+	}
+
+	// Ensure UV map is drawn
+	if (ui_view2d_uvmap_show || ui_view2d_type == VIEW_2D_TYPE_UVMAP) {
+		util_uv_cache_uv_map();
+	}
+
+	// Ensure font image is drawn
+	if (g_context->font->image == NULL) {
+		util_render_make_font_preview();
+	}
+
+	g_ui->input_enabled = base_ui_enabled;
+
+	ui_begin(g_ui);
+
+	headerh  = g_config->layout->buffer[LAYOUT_SIZE_HEADER] == 1 ? ui_header_h * 2 : ui_header_h;
+	i32 apph = iron_window_height() - g_config->layout->buffer[LAYOUT_SIZE_STATUS_H] + headerh;
+	if (!base_view3d_show) {
+		apph = base_h();
+	}
+
+	if (ui_window(ui_view2d_hwnd, ui_view2d_wx, ui_view2d_wy, ui_view2d_ww, ui_view2d_wh, false)) {
+
+		if (!g_config->touch_ui) {
+			bool expand = !base_view3d_show && !ui_nodes_show && g_config->layout->buffer[LAYOUT_SIZE_SIDEBAR_W] == 0;
+			ui_tab(&ui_view2d_tab, expand ? string_tmp("%s          ", tr("2D View")) : tr("2D View"), false, -1, !base_view3d_show);
+			if (ui_tab(&ui_view2d_tab, tr("+"), false, -1, false)) {
+				ui_view2d_tab = 0;
+			}
+		}
+
+		// Grid
+		// draw_set_color(0xffffffff);
+		// let step: f32 = ui_nodes_grid_cell_w * ui_view2d_pan_scale;
+		// let x: f32    = math_fmod(ui_view2d_pan_x, step) - step;
+		// let y: f32    = math_fmod(ui_view2d_pan_y, step) - step;
+		// draw_image(ui_view2d_grid, x, y);
+		draw_set_color(g_theme->SEPARATOR_COL + 0x00020202);
+		draw_filled_rect(0, 0, ui_view2d_ww, ui_view2d_wh);
+		draw_set_color(0xffffffff);
+
+		// Texture
+		gpu_texture_t *tex     = NULL;
+		slot_layer_t  *l       = g_context->layer;
+		i32            channel = 0;
+
+		i32 wm = fmin(ui_view2d_ww, ui_view2d_wh);
+		i32 tw = wm * 0.9 * ui_view2d_pan_scale;
+		i32 tx = ui_view2d_ww / 2.0 - tw / 2.0 + ui_view2d_pan_x;
+		i32 ty = apph / 2.0 - tw / 2.0 + ui_view2d_pan_y;
+
+		if (ui_view2d_type == VIEW_2D_TYPE_ASSET) {
+			tex = project_get_image(g_context->texture);
+		}
+		else if (ui_view2d_type == VIEW_2D_TYPE_NODE) {
+			ui_node_t *sel = ui_view2d_get_selected_node();
+			if (sel != NULL) {
+				gpu_texture_t *img = ui_nodes_get_node_preview_image(sel);
+				if (img != NULL) {
+					tex = img;
+				}
+			}
+		}
+		else if (ui_view2d_type == VIEW_2D_TYPE_LAYER || ui_view2d_type == VIEW_2D_TYPE_UVMAP) {
+			slot_layer_t *layer = l;
+
+			if (g_config->brush_live && render_path_paint_live_layer_drawn > 0) {
+				layer = render_path_paint_live_layer;
+			}
+			if (g_context->tool == TOOL_TYPE_MATERIAL) {
+				layer = render_path_paint_live_layer;
+			}
+
+			if (ui_view2d_layer_mode == VIEW_2D_LAYER_MODE_VISIBLE) {
+				gpu_texture_t *current = _draw_current;
+				bool           in_use  = gpu_in_use;
+				if (in_use)
+					draw_end();
+				layer = layers_flatten(false, NULL);
+				if (in_use)
+					draw_begin(current, false, 0);
+			}
+			else if (slot_layer_is_group(layer)) {
+				gpu_texture_t *current = _draw_current;
+				bool           in_use  = gpu_in_use;
+				if (in_use)
+					draw_end();
+				layer = layers_flatten(false, slot_layer_get_children(layer));
+				if (in_use)
+					draw_begin(current, false, 0);
+			}
+			else {
+				draw_set_color(color_from_floats(layer->mask_opacity, layer->mask_opacity, layer->mask_opacity, 1.0));
+			}
+
+			tex = slot_layer_is_mask(g_context->layer)      ? layer->texpaint
+			      : ui_view2d_tex_type == PAINT_TEX_BASE    ? layer->texpaint
+			      : ui_view2d_tex_type == PAINT_TEX_OPACITY ? layer->texpaint
+			      : ui_view2d_tex_type == PAINT_TEX_NORMAL  ? layer->texpaint_nor
+			                                                : layer->texpaint_pack;
+
+			channel = slot_layer_is_mask(g_context->layer)        ? 1
+			          : ui_view2d_tex_type == PAINT_TEX_OCCLUSION ? 1
+			          : ui_view2d_tex_type == PAINT_TEX_ROUGHNESS ? 2
+			          : ui_view2d_tex_type == PAINT_TEX_METALLIC  ? 3
+			          : ui_view2d_tex_type == PAINT_TEX_OPACITY   ? 4
+			          : ui_view2d_tex_type == PAINT_TEX_HEIGHT    ? 4
+			          : ui_view2d_tex_type == PAINT_TEX_NORMAL    ? 5
+			                                                      : 0;
+		}
+		else if (ui_view2d_type == VIEW_2D_TYPE_FONT) {
+			tex = g_context->font->image;
+		}
+#ifdef IRON_AUDIO
+		else if (ui_view2d_type == VIEW_2D_TYPE_SOUND && g_context->sound != NULL) {
+			i32 sw = ui_view2d_ww * 0.9 * ui_view2d_pan_scale;
+			i32 sh = wm * 0.5;
+			ui_view2d_draw_waveform(g_context->sound->sound, ui_view2d_ww / 2.0 - sw / 2.0 + ui_view2d_pan_x, apph / 2.0 - sh / 2.0 + ui_view2d_pan_y, sw, sh);
+		}
+#endif
+
+		i32 th = tw;
+		if (tex != NULL) {
+			th = tw * (tex->height / (float)tex->width);
+			ty = apph / 2.0 - th / 2.0 + ui_view2d_pan_y;
+			if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+				draw_set_pipeline(ui_view2d_pipe);
+			}
+
+			ui_view2d_draw_image(tex, tx, ty, tw, th, channel);
+			if (ui_view2d_tiled_show) {
+				ui_view2d_draw_image(tex, tx - tw, ty, tw, th, channel);
+				ui_view2d_draw_image(tex, tx - tw, ty - th, tw, th, channel);
+				ui_view2d_draw_image(tex, tx - tw, ty + th, tw, th, channel);
+				ui_view2d_draw_image(tex, tx + tw, ty, tw, th, channel);
+				ui_view2d_draw_image(tex, tx + tw, ty - th, tw, th, channel);
+				ui_view2d_draw_image(tex, tx + tw, ty + th, tw, th, channel);
+				ui_view2d_draw_image(tex, tx, ty - th, tw, th, channel);
+				ui_view2d_draw_image(tex, tx, ty + th, tw, th, channel);
+			}
+
+			if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+				draw_set_pipeline(NULL);
+			}
+			draw_set_color(0xffffffff);
+
+			// Texture and node preview color picking
+			if ((context_in_2d_view(VIEW_2D_TYPE_ASSET) || context_in_2d_view(VIEW_2D_TYPE_NODE)) && g_context->tool == TOOL_TYPE_PICKER && g_ui->input_down) {
+				_ui_view2d_render_tex = tex;
+				_ui_view2d_render_x   = g_ui->input_x - tx - ui_view2d_wx;
+				;
+				_ui_view2d_render_y  = g_ui->input_y - ty - ui_view2d_wy;
+				_ui_view2d_render_tw = tw;
+				_ui_view2d_render_th = th;
+				sys_notify_on_next_frame(&ui_view2d_render_color_pick, NULL);
+			}
+		}
+
+		// UV map
+		if (ui_view2d_type == VIEW_2D_TYPE_LAYER && ui_view2d_uvmap_show) {
+			draw_scaled_image(util_uv_uvmap, tx, ty, tw, th);
+		}
+
+		if (ui_view2d_type == VIEW_2D_TYPE_UVMAP) {
+			draw_scaled_image(util_uv_uvmap, tx, ty, tw, th);
+			edit_uvmap_update();
+		}
+
+		// Pixel grid
+		if (g_config->view2d_grid_show && tex != NULL) {
+			i32 cell  = g_config->view2d_grid_cell;
+			f32 stepx = cell / (float)tex->width * tw;
+			f32 stepy = cell / (float)tex->height * th;
+			draw_set_color(0x55ffffff);
+			for (f32 gx = tx; gx <= tx + tw + 0.5; gx += stepx) {
+				draw_filled_rect(math_floor(gx), ty, 1, th);
+			}
+			for (f32 gy = ty; gy <= ty + th + 0.5; gy += stepy) {
+				draw_filled_rect(tx, math_floor(gy), tw, 1);
+			}
+			draw_set_color(0xffffffff);
+		}
+
+		// Menu
+		i32 top_y = ui_menu_top_y();
+		i32 ew    = math_floor(UI_ELEMENT_W());
+		draw_set_color(g_theme->WINDOW_BG_COL);
+		draw_filled_rect(0, top_y, ui_view2d_ww, UI_ELEMENT_H() + UI_ELEMENT_OFFSET() * 2);
+		draw_set_color(0xffffffff);
+
+		f32 start_y = top_y + UI_ELEMENT_OFFSET();
+		g_ui->_x    = 2;
+		g_ui->_y    = 2 + start_y;
+
+		// Back button
+		if (g_config->touch_ui && !base_view3d_show) {
+			g_ui->_w = math_floor(ew * 0.7 + 3);
+			if (ui_icon_button(tr("Back"), ICON_ARROW_LEFT, UI_ALIGN_CENTER)) {
+				g_ui->input_released = false;
+				g_config->workspace  = WORKSPACE_PAINT_3D;
+				config_save();
+				base_update_workspace();
+			}
+			g_ui->_x += ew * 0.7 + 3;
+			g_ui->_y = 2 + start_y;
+		}
+
+		bool full = true;
+#ifdef IRON_IOS
+		if (config_is_iphone()) {
+			full = false;
+		}
+#endif
+
+		// Editable layer name
+		if (full) {
+			g_ui->_w   = ew;
+			char *text = "";
+			if (ui_view2d_type == VIEW_2D_TYPE_NODE) {
+				text = g_context->node_preview_name;
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_ASSET && g_context->texture != NULL) {
+				text = g_context->texture->name;
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+				text = l->name;
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_FONT) {
+				text = g_context->font->name;
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_SOUND && g_context->sound != NULL) {
+				text = g_context->sound->name;
+			}
+
+			g_ui->_w = math_floor(math_min(draw_string_width(g_font, g_ui->font_size, text) + 15 * UI_SCALE(), 100 * UI_SCALE()));
+
+			bool name_changed = false;
+			if (ui_view2d_type == VIEW_2D_TYPE_ASSET) {
+				asset_t *asset = g_context->texture;
+				if (asset != NULL) {
+					ui_text_input(&asset->name, "", UI_ALIGN_LEFT, true, false);
+					name_changed = ui_item_changed();
+				}
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_NODE) {
+				ui_node_t *sel = ui_view2d_get_selected_node();
+				if (sel != NULL && !string_equals(sel->type, "GROUP")) {
+					ui_text_input(&sel->name, "", UI_ALIGN_LEFT, true, false);
+					name_changed                 = ui_item_changed();
+					g_context->node_preview_name = string_copy(sel->name);
+					ui_view2d_text_input_hover   = g_ui->is_hovered;
+				}
+				else {
+					ui_text(g_context->node_preview_name, UI_ALIGN_LEFT, 0x00000000);
+				}
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+				ui_id_t name_id     = ui_widget_id(&l->name, UI_ID_TEXT);
+				bool    was_editing = g_ui->text_selected_id == name_id;
+				char   *old_name    = l->name;
+				ui_text_input(&l->name, "", UI_ALIGN_LEFT, true, false);
+				name_changed = ui_item_changed();
+				tab_stages_rename_layer(old_name, l->name);
+				ui_view2d_text_input_hover = g_ui->is_hovered;
+
+				if (!was_editing && g_ui->text_selected_id == name_id) {
+					ui_view2d_layer_name_prev = string_copy(l->name);
+				}
+				else if (was_editing && g_ui->text_selected_id != name_id && ui_view2d_layer_name_prev != NULL &&
+				         !string_equals(ui_view2d_layer_name_prev, l->name)) {
+					history_layer_name(l, ui_view2d_layer_name_prev);
+				}
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_FONT) {
+				ui_text_input(&g_context->font->name, "", UI_ALIGN_LEFT, true, false);
+				name_changed = ui_item_changed();
+			}
+			else if (ui_view2d_type == VIEW_2D_TYPE_SOUND && g_context->sound != NULL) {
+				ui_text_input(&g_context->sound->name, "", UI_ALIGN_LEFT, true, false);
+				name_changed = ui_item_changed();
+			}
+
+			if (name_changed) {
+				ui_base_hwnds->buffer[0]->redraws = 2;
+			}
+			g_ui->_x += g_ui->_w + 3;
+			g_ui->_y = 2 + start_y;
+		}
+
+		g_ui->_w = ew;
+
+		if (ui_view2d_type == VIEW_2D_TYPE_LAYER) {
+			string_array_t *layer_mode_combo = any_array_create_from_raw_tmp(
+			    (void *[]){
+			        tr("Visible"),
+			        tr("Selected"),
+			    },
+			    2);
+			ui_combo((int *)&ui_view2d_layer_mode, layer_mode_combo, tr("Layers"), false, UI_ALIGN_LEFT, true);
+			g_ui->_x += ew + 3;
+			g_ui->_y = 2 + start_y;
+
+			if (!slot_layer_is_mask(g_context->layer)) {
+				string_array_t *tex_type_combo = any_array_create_from_raw_tmp(
+				    (void *[]){
+				        tr("Base Color"),
+				        tr("Opacity"),
+				        tr("Normal Map"),
+				        tr("Occlusion"),
+				        tr("Roughness"),
+				        tr("Metallic"),
+				        tr("Height"),
+				    },
+				    7);
+
+				if (g_config->workflow == WORKFLOW_BASE) {
+					array_splice(tex_type_combo, 6, 1);
+					array_splice(tex_type_combo, 5, 1);
+					array_splice(tex_type_combo, 4, 1);
+					array_splice(tex_type_combo, 3, 1);
+					array_splice(tex_type_combo, 2, 1);
+				}
+
+				ui_combo((int *)&ui_view2d_tex_type, tex_type_combo, tr("Texture"), false, UI_ALIGN_LEFT, true);
+				g_ui->_x += ew + 3;
+				g_ui->_y = 2 + start_y;
+			}
+		}
+
+		if (ui_view2d_type == VIEW_2D_TYPE_SOUND) {
+			g_ui->_w = math_floor(ew * 0.7 + 3);
+			if (ui_view2d_sound_is_playing()) {
+				if (ui_icon_button(tr("Stop"), ICON_STOP, UI_ALIGN_CENTER)) {
+					ui_view2d_stop_sound();
+				}
+			}
+			else {
+				g_ui->enabled = g_context->sound != NULL && g_context->sound->sound != NULL;
+				if (ui_icon_button(tr("Play"), ICON_PLAY, UI_ALIGN_CENTER)) {
+					ui_view2d_play_sound();
+				}
+				g_ui->enabled = true;
+			}
+			g_ui->_x += ew * 0.7 + 3;
+			g_ui->_y = 2 + start_y;
+		}
+
+		// Zoom slider
+		if (full && tex != NULL) {
+			i32 scale_percent = math_round((tw / (float)tex->width) * 100);
+			f32 zoom          = scale_percent;
+			g_ui->_w          = math_floor(ew + 3);
+			ui_set_next_id((ui_id_t)&ui_view2d_pan_scale);
+			ui_slider(&zoom, string_tmp("%%", scale_percent), 1, 100, true, 1, true, UI_ALIGN_RIGHT, true);
+			if (ui_item_changed()) {
+				ui_view2d_pan_scale     = zoom / 100.0 * tex->width / (wm * 0.9);
+				ui_view2d_hwnd->redraws = 2;
+			}
+			g_ui->_x += ew + 3;
+			g_ui->_y = 2 + start_y;
+		}
+
+		g_ui->_w = math_floor(ew * 0.7 + 3);
+		if (ui_icon_button("Edit", ICON_EDIT, UI_ALIGN_CENTER)) {
+			ui_view2d_tex = tex;
+			ui_menu_draw(&ui_view2d_draw_edit, -1, -1);
+		}
+		g_ui->_x += ew * 0.7 + 3;
+		g_ui->_y = 2 + start_y;
+
+		// Picked position
+		if (g_context->tool == TOOL_TYPE_PICKER && (ui_view2d_type == VIEW_2D_TYPE_LAYER || ui_view2d_type == VIEW_2D_TYPE_ASSET)) {
+			gpu_texture_t *cursor_img = resource_get("cursor.k");
+			f32            hsize      = 16 * UI_SCALE();
+			f32            size       = hsize * 2;
+			draw_scaled_image(cursor_img, tx + tw * g_context->uvx_picked - hsize, ty + th * g_context->uvy_picked - hsize, size, size);
+		}
+	}
+	ui_end();
+
+	g_ui->input_enabled = true;
+}

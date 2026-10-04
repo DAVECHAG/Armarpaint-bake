@@ -1,0 +1,52 @@
+#version 450
+/* GroupNorm over NCHW: one workgroup per (batch, group). Reduces mean/var over
+ * the group's channels*spatial elements, then applies per-channel affine. */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer In    { float x[]; };
+layout(std430, binding = 1) readonly  buffer Gamma { float gamma[]; };
+layout(std430, binding = 2) readonly  buffer Beta  { float beta[]; };
+layout(std430, binding = 3) writeonly buffer Out   { float outp[]; };
+
+layout(push_constant) uniform PC {
+    uint batch, channels, spatial, num_groups;
+    float eps;
+} pc;
+
+shared float s_sum[256];
+shared float s_sq[256];
+
+void main() {
+    uint grp = gl_WorkGroupID.x;            /* over batch * num_groups */
+    uint b   = grp / pc.num_groups;
+    uint g   = grp % pc.num_groups;
+    uint cpg = pc.channels / pc.num_groups; /* channels per group */
+    uint c0  = g * cpg;
+    uint count = cpg * pc.spatial;
+    uint base  = (b * pc.channels + c0) * pc.spatial;
+    uint tid = gl_LocalInvocationID.x;
+
+    float sum = 0.0, sq = 0.0;
+    for (uint i = tid; i < count; i += 256u) {
+        float v = x[base + i];
+        sum += v;
+        sq  += v * v;
+    }
+    s_sum[tid] = sum;
+    s_sq[tid]  = sq;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) { s_sum[tid] += s_sum[tid + s]; s_sq[tid] += s_sq[tid + s]; }
+        barrier();
+    }
+
+    float mean = s_sum[0] / float(count);
+    float var  = s_sq[0] / float(count) - mean * mean;
+    float inv  = inversesqrt(var + pc.eps);
+
+    for (uint i = tid; i < count; i += 256u) {
+        uint c = c0 + i / pc.spatial;
+        float v = x[base + i];
+        outp[base + i] = (v - mean) * inv * gamma[c] + beta[c];
+    }
+}

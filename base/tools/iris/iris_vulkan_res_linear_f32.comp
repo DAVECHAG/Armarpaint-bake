@@ -1,0 +1,30 @@
+#version 450
+/*
+ * f32-weight linear projection with optional bias:
+ *   out[s,o] = sum_k x[s,k] * W[o,k] + (has_bias ? bias[o] : 0)
+ * W is row-major [out_dim, in_dim] (i.e. C = x @ W^T), matching iris_matmul_t.
+ * Used for the Z-Image embedding projections and final layer; not on the hot
+ * per-block path, so a plain (non-tiled) GEMM is adequate.
+ * One invocation per (s, o).
+ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly  buffer X    { float x[]; };
+layout(std430, binding = 1) readonly  buffer W    { float w[]; };
+layout(std430, binding = 2) readonly  buffer Bias { float bias[]; };
+layout(std430, binding = 3) writeonly buffer Out  { float outp[]; };
+
+layout(push_constant) uniform PC { uint seq, in_dim, out_dim, has_bias; } pc;
+
+void main() {
+    uint o = gl_GlobalInvocationID.x;
+    uint s = gl_GlobalInvocationID.y;
+    if (s >= pc.seq || o >= pc.out_dim) return;
+
+    uint xb = s * pc.in_dim;
+    uint wb = o * pc.in_dim;
+    float acc = 0.0;
+    for (uint kk = 0u; kk < pc.in_dim; kk++) acc += x[xb + kk] * w[wb + kk];
+    if (pc.has_bias != 0u) acc += bias[o];
+    outp[s * pc.out_dim + o] = acc;
+}

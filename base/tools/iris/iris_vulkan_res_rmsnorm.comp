@@ -1,0 +1,42 @@
+#version 450
+/*
+ * Z-Image RMSNorm with an f32 weight: per-row normalization over `hidden`,
+ * scaled by a full-precision weight.
+ *   out[s,i] = x[s,i] / sqrt(mean(x[s,:]^2) + eps) * weight[i]
+ * One workgroup per row; the row's elements are reduced in shared memory.
+ * The weight is f32 (unlike the Qwen variant, which packs bf16): the Z-Image
+ * GPU path fuses the modulation scale into this weight on the CPU, so it is a
+ * dynamic f32 vector uploaded per call.
+ */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer In  { float x[]; };
+layout(std430, binding = 1) readonly  buffer W   { float w[]; };
+layout(std430, binding = 2) writeonly buffer Out { float outp[]; };
+
+layout(push_constant) uniform PC { uint rows, hidden; float eps; } pc;
+
+shared float s_sq[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint base = row * pc.hidden;
+
+    float sq = 0.0;
+    for (uint i = tid; i < pc.hidden; i += 256u) {
+        float v = x[base + i];
+        sq += v * v;
+    }
+    s_sq[tid] = sq;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) s_sq[tid] += s_sq[tid + s];
+        barrier();
+    }
+
+    float inv = inversesqrt(s_sq[0] / float(pc.hidden) + pc.eps);
+    for (uint i = tid; i < pc.hidden; i += 256u) {
+        outp[base + i] = x[base + i] * inv * w[i];
+    }
+}

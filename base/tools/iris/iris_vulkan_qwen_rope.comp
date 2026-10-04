@@ -1,0 +1,55 @@
+#version 450
+/*
+ * Qwen3 RoPE: rotate Q and K in place using precomputed cos/sin tables.
+ * Split-half rotation within each head (dims [i] paired with [i+half]):
+ *   out0 = x0*cos - x1*sin
+ *   out1 = x0*sin + x1*cos
+ * Q has num_q_heads, K has num_kv_heads (GQA). The two are packed into one
+ * dispatch: thread ids [0, q_total) rotate Q, [q_total, q_total+k_total) rotate K.
+ * cos/sin are f32 tables indexed by [pos*half + i].
+ */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer Q   { float q[]; };
+layout(std430, binding = 1) buffer K   { float k[]; };
+layout(std430, binding = 2) readonly buffer Cos { float cosb[]; };
+layout(std430, binding = 3) readonly buffer Sin { float sinb[]; };
+
+layout(push_constant) uniform PC {
+    uint seq, num_q_heads, num_kv_heads, head_dim;
+} pc;
+
+void main() {
+    uint half_dim = pc.head_dim / 2u;
+    uint q_total = pc.seq * pc.num_q_heads * half_dim;
+    uint k_total = pc.seq * pc.num_kv_heads * half_dim;
+    uint total = q_total + k_total;
+    uint stride_g = gl_NumWorkGroups.x * 256u;
+
+    for (uint t = gl_GlobalInvocationID.x; t < total; t += stride_g) {
+        if (t < q_total) {
+            uint i = t % half_dim;
+            uint rem = t / half_dim;          /* s*num_q_heads + h */
+            uint s = rem / pc.num_q_heads;
+            uint base = rem * pc.head_dim;     /* (s*num_q_heads + h)*head_dim */
+            float c = cosb[s * half_dim + i];
+            float sn = sinb[s * half_dim + i];
+            float x0 = q[base + i];
+            float x1 = q[base + i + half_dim];
+            q[base + i]            = x0 * c - x1 * sn;
+            q[base + i + half_dim] = x0 * sn + x1 * c;
+        } else {
+            uint tk = t - q_total;
+            uint i = tk % half_dim;
+            uint rem = tk / half_dim;          /* s*num_kv_heads + h */
+            uint s = rem / pc.num_kv_heads;
+            uint base = rem * pc.head_dim;
+            float c = cosb[s * half_dim + i];
+            float sn = sinb[s * half_dim + i];
+            float x0 = k[base + i];
+            float x1 = k[base + i + half_dim];
+            k[base + i]            = x0 * c - x1 * sn;
+            k[base + i + half_dim] = x0 * sn + x1 * c;
+        }
+    }
+}

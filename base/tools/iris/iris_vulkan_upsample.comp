@@ -1,0 +1,21 @@
+#version 450
+/* Nearest-neighbour 2x upsample, batch=1: [C,H,W] -> [C,2H,2W]. */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer In  { float x[]; };
+layout(std430, binding = 1) writeonly buffer Out { float outp[]; };
+
+layout(push_constant) uniform PC { uint channels, H, W; } pc;
+
+void main() {
+    uint OW = pc.W * 2u, OH = pc.H * 2u;
+    uint total = pc.channels * OH * OW;
+    uint stride_g = gl_NumWorkGroups.x * 256u;
+    for (uint idx = gl_GlobalInvocationID.x; idx < total; idx += stride_g) {
+        uint ox = idx % OW;
+        uint t  = idx / OW;
+        uint oy = t % OH;
+        uint c  = t / OH;
+        outp[idx] = x[(c * pc.H + oy / 2u) * pc.W + ox / 2u];
+    }
+}

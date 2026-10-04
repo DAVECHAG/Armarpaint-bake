@@ -1,0 +1,25 @@
+#version 450
+/*
+ * Strided row-block copy for the Flux resident transformer path.
+ *   dst[s*dst_stride + dst_off + e] = src[s*src_stride + src_off + e]
+ * for e in [0, w), s in [0, seq). One invocation per (s, e).
+ *
+ * Splits a fused [Q,K,V,gate,up] projection into its streams (one call per
+ * stream, varying src_off/w) and assembles the [attn|mlp] concat consumed by
+ * the single-block output projection (one call per part, varying dst_off/w).
+ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly  buffer S { float src[]; };
+layout(std430, binding = 1) writeonly buffer D { float dst[]; };
+
+layout(push_constant) uniform PC {
+    uint seq, w, src_stride, src_off, dst_stride, dst_off;
+} pc;
+
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    uint s = gl_GlobalInvocationID.y;
+    if (s >= pc.seq || e >= pc.w) return;
+    dst[s * pc.dst_stride + pc.dst_off + e] = src[s * pc.src_stride + pc.src_off + e];
+}

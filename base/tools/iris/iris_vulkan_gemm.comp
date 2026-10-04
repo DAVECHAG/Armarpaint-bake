@@ -1,0 +1,70 @@
+#version 450
+
+/*
+ * Iris Vulkan GEMM (f32)
+ *
+ * Computes C[M,N] = alpha * op(A)[M,K] @ op(B)[K,N] + beta * C[M,N]
+ * where op() optionally transposes, matching the BLAS sgemm contract used
+ * by the Iris kernels layer. Tiled with 16x16 shared-memory blocks.
+ *
+ * A, B, C are row-major with leading dims lda, ldb, ldc.
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer ABuf { float A[]; };
+layout(std430, binding = 1) readonly buffer BBuf { float B[]; };
+layout(std430, binding = 2) buffer CBuf { float C[]; };
+
+layout(push_constant) uniform PC {
+    uint M, N, K;
+    uint lda, ldb, ldc;
+    uint ta, tb;
+    float alpha, beta;
+} pc;
+
+shared float As[16][16];
+shared float Bs[16][16];
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+    uint tx = gl_LocalInvocationID.x;
+    uint ty = gl_LocalInvocationID.y;
+
+    float acc = 0.0;
+    uint numTiles = (pc.K + 15u) / 16u;
+
+    for (uint t = 0u; t < numTiles; t++) {
+        uint kA = t * 16u + tx;   /* column of A loaded by this lane */
+        uint kB = t * 16u + ty;   /* row of B loaded by this lane */
+
+        float av = 0.0;
+        if (row < pc.M && kA < pc.K) {
+            av = (pc.ta == 0u) ? A[row * pc.lda + kA]
+                               : A[kA * pc.lda + row];
+        }
+        As[ty][tx] = av;
+
+        float bv = 0.0;
+        if (col < pc.N && kB < pc.K) {
+            bv = (pc.tb == 0u) ? B[kB * pc.ldb + col]
+                               : B[col * pc.ldb + kB];
+        }
+        Bs[ty][tx] = bv;
+
+        barrier();
+
+        for (uint k = 0u; k < 16u; k++) {
+            acc += As[ty][k] * Bs[k][tx];
+        }
+
+        barrier();
+    }
+
+    if (row < pc.M && col < pc.N) {
+        uint ci = row * pc.ldc + col;
+        float prev = (pc.beta != 0.0) ? C[ci] : 0.0;
+        C[ci] = pc.alpha * acc + pc.beta * prev;
+    }
+}

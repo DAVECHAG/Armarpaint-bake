@@ -1,0 +1,86 @@
+#pragma once
+
+#include "iron_array.h"
+#include "iron_global.h"
+#include "iron_map.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#define IRON_OUTDIR "out"
+#ifdef IRON_ANDROID
+struct AAsset;
+struct __sFILE;
+typedef struct __sFILE FILE;
+#endif
+
+#define IRON_FILE_TYPE_ASSET 0
+#define IRON_FILE_TYPE_SAVE  1
+
+typedef struct iron_file_reader {
+	void  *data; // A file handle or a more complex structure
+	size_t size;
+	size_t offset; // Needed by some implementations
+
+	bool (*close)(struct iron_file_reader *reader);
+	size_t (*read)(struct iron_file_reader *reader, void *data, size_t size);
+	size_t (*pos)(struct iron_file_reader *reader);
+	bool (*seek)(struct iron_file_reader *reader, size_t pos);
+} iron_file_reader_t;
+
+bool     iron_file_reader_open(iron_file_reader_t *reader, const char *filepath, int type);
+bool     iron_file_reader_close(iron_file_reader_t *reader);
+size_t   iron_file_reader_read(iron_file_reader_t *reader, void *data, size_t size);
+size_t   iron_file_reader_size(iron_file_reader_t *reader);
+size_t   iron_file_reader_pos(iron_file_reader_t *reader);
+bool     iron_file_reader_seek(iron_file_reader_t *reader, size_t pos);
+float    iron_read_f32le(uint8_t *data);
+uint64_t iron_read_u64le(uint8_t *data);
+int64_t  iron_read_s64le(uint8_t *data);
+uint32_t iron_read_u32le(uint8_t *data);
+int32_t  iron_read_s32le(uint8_t *data);
+uint16_t iron_read_u16le(uint8_t *data);
+int16_t  iron_read_s16le(uint8_t *data);
+uint8_t  iron_read_u8(uint8_t *data);
+int8_t   iron_read_s8(uint8_t *data);
+
+void  iron_internal_set_files_location(char *dir);
+char *iron_internal_files_location(void);
+bool  iron_internal_file_reader_open(iron_file_reader_t *reader, const char *filename, int type);
+
+typedef struct iron_file_writer {
+	void       *file;
+	const char *filename;
+} iron_file_writer_t;
+
+bool iron_file_writer_open(iron_file_writer_t *writer, const char *filepath);
+void iron_file_writer_write(iron_file_writer_t *writer, void *data, int size);
+void iron_file_writer_close(iron_file_writer_t *writer);
+
+char *iron_read_directory(char *path);
+void  iron_create_directory(char *path);
+bool  iron_is_directory(char *path);
+bool  iron_file_exists(char *path);
+void  iron_delete_file(char *path);
+void  iron_file_save_bytes(char *path, buffer_t *bytes, u64 length);
+void  iron_file_download(char *url, void (*callback)(char *, buffer_t *), i32 size, char *dst_path);
+
+typedef struct file_download_data {
+	void (*done)(char *url);
+} file_download_data_t;
+
+typedef struct file_cache_cloud_data {
+	char dest[512];
+	char path[512];
+	void (*done)(char *dest);
+} file_cache_cloud_data_t;
+
+extern any_map_t *file_cloud;
+extern i32_map_t *file_cloud_sizes;
+
+any_array_t *file_read_directory(char *path);
+void         file_copy(char *src_path, char *dst_path);
+void         file_start(char *path);
+void         file_download_to(char *url, char *dst_path, void (*done)(char *url), i32 size);
+void         file_cache_cloud(char *path, void (*done)(char *dest), char *server);
+void         file_init_cloud(void (*done)(void), char *server);

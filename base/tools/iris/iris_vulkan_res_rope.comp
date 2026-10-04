@@ -1,0 +1,44 @@
+#version 450
+/*
+ * Z-Image single-stream RoPE (consecutive-pair rotation) applied in place to
+ * Q and K over the full head_dim. cos/sin are pre-assembled [seq, head_dim]
+ * tables (the 3 axes already merged on the CPU and duplicated per pair), so a
+ * pair (2p, 2p+1) shares cos[2p]/sin[2p]:
+ *   out0 = x0 * cos - x1 * sin
+ *   out1 = x1 * cos + x0 * sin
+ * One invocation per (s, h, pair).
+ */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer Q  { float q[]; };
+layout(std430, binding = 1) buffer K  { float k[]; };
+layout(std430, binding = 2) readonly buffer COS { float cosf[]; };
+layout(std430, binding = 3) readonly buffer SIN { float sinf[]; };
+
+layout(push_constant) uniform PC { uint seq, heads, head_dim; } pc;
+
+void main() {
+    uint half_d = pc.head_dim >> 1u;
+    uint total = pc.seq * pc.heads * half_d;
+    uint stride = gl_NumWorkGroups.x * 256u;
+    uint hidden = pc.heads * pc.head_dim;
+    for (uint gid = gl_GlobalInvocationID.x; gid < total; gid += stride) {
+        uint p = gid % half_d;
+        uint sh = gid / half_d;
+        uint h = sh % pc.heads;
+        uint s = sh / pc.heads;
+
+        uint base = s * hidden + h * pc.head_dim + 2u * p;
+        uint freq = s * pc.head_dim + 2u * p;
+        float c = cosf[freq];
+        float sn = sinf[freq];
+
+        float q0 = q[base], q1 = q[base + 1u];
+        q[base]      = q0 * c - q1 * sn;
+        q[base + 1u] = q1 * c + q0 * sn;
+
+        float k0 = k[base], k1 = k[base + 1u];
+        k[base]      = k0 * c - k1 * sn;
+        k[base + 1u] = k1 * c + k0 * sn;
+    }
+}

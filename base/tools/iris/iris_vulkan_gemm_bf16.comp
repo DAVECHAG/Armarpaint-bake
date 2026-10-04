@@ -1,0 +1,78 @@
+#version 450
+
+/*
+ * Iris Vulkan GEMM (bf16 weights)
+ *
+ * Computes C[M,N] = alpha * op(A)[M,K] @ op(B)[K,N] + beta * C[M,N]
+ * where A and C are f32 and B is bfloat16. Used for weight-bound linear
+ * layers: A is the f32 activation, B is the bf16 weight matrix.
+ *
+ * bf16 values are packed two-per-uint (little endian) so this needs no
+ * 16-bit storage extension. bf16 -> f32 is simply (bits << 16).
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer ABuf { float A[]; };
+layout(std430, binding = 1) readonly buffer BBuf { uint Bw[]; };
+layout(std430, binding = 2) buffer CBuf { float C[]; };
+
+layout(push_constant) uniform PC {
+    uint M, N, K;
+    uint lda, ldb, ldc;
+    uint ta, tb;
+    float alpha, beta;
+} pc;
+
+shared float As[16][16];
+shared float Bs[16][16];
+
+float load_bf16(uint e) {
+    uint w = Bw[e >> 1u];
+    uint h = ((e & 1u) == 0u) ? (w & 0xffffu) : (w >> 16u);
+    return uintBitsToFloat(h << 16u);
+}
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+    uint tx = gl_LocalInvocationID.x;
+    uint ty = gl_LocalInvocationID.y;
+
+    float acc = 0.0;
+    uint numTiles = (pc.K + 15u) / 16u;
+
+    for (uint t = 0u; t < numTiles; t++) {
+        uint kA = t * 16u + tx;
+        uint kB = t * 16u + ty;
+
+        float av = 0.0;
+        if (row < pc.M && kA < pc.K) {
+            av = (pc.ta == 0u) ? A[row * pc.lda + kA]
+                               : A[kA * pc.lda + row];
+        }
+        As[ty][tx] = av;
+
+        float bv = 0.0;
+        if (col < pc.N && kB < pc.K) {
+            uint e = (pc.tb == 0u) ? (kB * pc.ldb + col)
+                                   : (col * pc.ldb + kB);
+            bv = load_bf16(e);
+        }
+        Bs[ty][tx] = bv;
+
+        barrier();
+
+        for (uint k = 0u; k < 16u; k++) {
+            acc += As[ty][k] * Bs[k][tx];
+        }
+
+        barrier();
+    }
+
+    if (row < pc.M && col < pc.N) {
+        uint ci = row * pc.ldc + col;
+        float prev = (pc.beta != 0.0) ? C[ci] : 0.0;
+        C[ci] = pc.alpha * acc + pc.beta * prev;
+    }
+}

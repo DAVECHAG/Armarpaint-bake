@@ -1,0 +1,95 @@
+#version 450
+/*
+ * Qwen3 scaled dot-product attention with GQA, causal masking and a padding
+ * mask. One workgroup per (query position i, head h); the 128 lanes cooperate
+ * over the key/value sequence.
+ *
+ *   scores[j] = scale * dot(Q[i,h], K[j,kv_h]),  for j <= i and mask[j] != 0
+ *   p = softmax(scores)
+ *   out[i,h,d] = sum_j p[j] * V[j,kv_h,d]
+ *
+ * kv_h = h / (num_heads / num_kv_heads). Q/K/V/out are f32; mask is f32 with
+ * 1.0 for valid tokens and 0.0 for padding. seq is bounded by 512.
+ */
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) readonly  buffer Q    { float q[]; };
+layout(std430, binding = 1) readonly  buffer K    { float k[]; };
+layout(std430, binding = 2) readonly  buffer V    { float v[]; };
+layout(std430, binding = 3) writeonly buffer Out  { float outp[]; };
+layout(std430, binding = 4) readonly  buffer Mask { float mask[]; };
+
+layout(push_constant) uniform PC {
+    uint seq, num_heads, num_kv_heads, head_dim;
+    float scale;
+} pc;
+
+shared float sc[512];
+shared float red[128];
+
+void main() {
+    uint i = gl_WorkGroupID.x;     /* query position */
+    uint h = gl_WorkGroupID.y;     /* head */
+    uint tid = gl_LocalInvocationID.x;
+
+    uint head_dim = pc.head_dim;
+    uint q_dim  = pc.num_heads * head_dim;
+    uint kv_dim = pc.num_kv_heads * head_dim;
+    uint kv_h = h / (pc.num_heads / pc.num_kv_heads);
+
+    uint q_base = i * q_dim + h * head_dim;
+
+    /* Phase 1: scores for all keys j (causal + padding mask). */
+    for (uint j = tid; j < pc.seq; j += 128u) {
+        float s;
+        if (j > i || mask[j] == 0.0) {
+            s = -1e30;
+        } else {
+            uint k_base = j * kv_dim + kv_h * head_dim;
+            float dot = 0.0;
+            for (uint d = 0u; d < head_dim; d++) {
+                dot += q[q_base + d] * k[k_base + d];
+            }
+            s = dot * pc.scale;
+        }
+        sc[j] = s;
+    }
+    barrier();
+
+    /* Phase 2: max over scores. */
+    float m = -1e30;
+    for (uint j = tid; j < pc.seq; j += 128u) m = max(m, sc[j]);
+    red[tid] = m;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) {
+        if (tid < s) red[tid] = max(red[tid], red[tid + s]);
+        barrier();
+    }
+    float row_max = red[0];
+    barrier();
+
+    /* Phase 3: exponentiate and sum. */
+    float lsum = 0.0;
+    for (uint j = tid; j < pc.seq; j += 128u) {
+        float e = exp(sc[j] - row_max);
+        sc[j] = e;
+        lsum += e;
+    }
+    red[tid] = lsum;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) {
+        if (tid < s) red[tid] += red[tid + s];
+        barrier();
+    }
+    float inv_sum = 1.0 / red[0];
+    barrier();
+
+    /* Phase 4: weighted sum of V into the output. */
+    for (uint d = tid; d < head_dim; d += 128u) {
+        float acc = 0.0;
+        for (uint j = 0u; j <= i; j++) {
+            acc += sc[j] * v[j * kv_dim + kv_h * head_dim + d];
+        }
+        outp[q_base + d] = acc * inv_sum;
+    }
+}

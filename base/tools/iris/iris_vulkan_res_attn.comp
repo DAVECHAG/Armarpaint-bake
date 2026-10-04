@@ -1,0 +1,93 @@
+#version 450
+/*
+ * Z-Image full (bidirectional) self-attention, f32, flash-style so it works at
+ * any sequence length without materializing the [seq, seq] score matrix.
+ * One workgroup per (query position i, head h); 128 lanes cooperate.
+ *   scores[j] = scale * dot(Q[i,h], K[j,h])
+ *   out[i,h,:] = softmax(scores) @ V[:,h,:]
+ * Online softmax: keys are processed in tiles of 128; running max/sum and the
+ * per-dim accumulator are updated per tile. head_dim must be <= 128.
+ */
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) readonly  buffer Q { float q[]; };
+layout(std430, binding = 1) readonly  buffer K { float k[]; };
+layout(std430, binding = 2) readonly  buffer V { float v[]; };
+layout(std430, binding = 3) writeonly buffer O { float o[]; };
+
+layout(push_constant) uniform PC { uint seq, num_heads, head_dim; float scale; } pc;
+
+shared float q_sh[128];
+shared float sc[128];
+shared float red[128];
+shared float s_m;
+shared float s_l;
+
+void main() {
+    uint i = gl_WorkGroupID.x;     /* query position */
+    uint h = gl_WorkGroupID.y;     /* head */
+    uint tid = gl_LocalInvocationID.x;
+    uint hd = pc.head_dim;
+    uint dim = pc.num_heads * hd;
+    uint q_base = i * dim + h * hd;
+
+    if (tid < hd) q_sh[tid] = q[q_base + tid];
+    if (tid == 0u) { s_m = -1e30; s_l = 0.0; }
+    barrier();
+
+    float acc = 0.0;  /* lane `tid` accumulates output dim `tid` (tid < hd) */
+
+    for (uint tile = 0u; tile < pc.seq; tile += 128u) {
+        uint j = tile + tid;
+        float score = -1e30;
+        if (j < pc.seq) {
+            uint k_base = j * dim + h * hd;
+            float dot = 0.0;
+            for (uint d = 0u; d < hd; d++) dot += q_sh[d] * k[k_base + d];
+            score = dot * pc.scale;
+        }
+        sc[tid] = score;
+        barrier();
+
+        /* tile max */
+        red[tid] = score;
+        barrier();
+        for (uint s = 64u; s > 0u; s >>= 1u) {
+            if (tid < s) red[tid] = max(red[tid], red[tid + s]);
+            barrier();
+        }
+        float tile_max = red[0];
+        barrier();
+
+        float m_old = s_m;
+        float m_new = max(m_old, tile_max);
+        float corr = exp(m_old - m_new);
+
+        /* tile sum of exp(score - m_new) */
+        float e = (j < pc.seq) ? exp(sc[tid] - m_new) : 0.0;
+        red[tid] = e;
+        barrier();
+        for (uint s = 64u; s > 0u; s >>= 1u) {
+            if (tid < s) red[tid] += red[tid + s];
+            barrier();
+        }
+        float tile_sum = red[0];
+        barrier();
+
+        if (tid < hd) {
+            float a = acc * corr;
+            for (uint t = 0u; t < 128u; t++) {
+                uint jj = tile + t;
+                if (jj < pc.seq) {
+                    float p = exp(sc[t] - m_new);
+                    a += p * v[jj * dim + h * hd + tid];
+                }
+            }
+            acc = a;
+        }
+        if (tid == 0u) { s_l = s_l * corr + tile_sum; s_m = m_new; }
+        barrier();
+    }
+
+    if (tid < hd) o[q_base + tid] = acc / s_l;
+}

@@ -1,0 +1,638 @@
+
+#include "../global.h"
+
+bool make_paint_is_raytraced_bake() {
+	return g_context->bake_type == BAKE_TYPE_INIT;
+}
+
+bool make_paint_is_zero_constant(char *s) {
+	char *end;
+	f32   f = strtof(s, &end);
+	return end != s && *end == '\0' && f == 0.0;
+}
+
+string_array_t *make_paint_color_attachments() {
+	if (g_context->tool == TOOL_TYPE_COLORID || g_context->tool == TOOL_TYPE_CURSOR) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA32",
+		    },
+		    1);
+		return res;
+	}
+	if (g_context->tool == TOOL_TYPE_PICKER && g_context->pick_pos_nor_tex) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA128",
+		        "RGBA128",
+		    },
+		    2);
+		return res;
+	}
+	if (g_context->tool == TOOL_TYPE_PICKER && slot_layer_is_mask(g_context->layer)) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA32",
+		        "RGBA32",
+		    },
+		    2);
+		return res;
+	}
+	if (g_context->tool == TOOL_TYPE_PICKER || g_context->tool == TOOL_TYPE_MATERIAL) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA32",
+		        "RGBA32",
+		        "RGBA32",
+		        "RGBA32",
+		    },
+		    4);
+		return res;
+	}
+	if (g_context->tool == TOOL_TYPE_BAKE && make_paint_is_raytraced_bake()) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA64",
+		        "RGBA64",
+		    },
+		    2);
+		return res;
+	}
+
+	gpu_texture_format_t format = base_bits == TEXTURE_BITS_BITS8    ? GPU_TEXTURE_FORMAT_RGBA32
+	                              : base_bits == TEXTURE_BITS_BITS16 ? GPU_TEXTURE_FORMAT_RGBA64
+	                                                                 : GPU_TEXTURE_FORMAT_RGBA128;
+
+	if (format == GPU_TEXTURE_FORMAT_RGBA64) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA64",
+		        "RGBA64",
+		        "RGBA64",
+		        "R8",
+		    },
+		    4);
+		return res;
+	}
+	if (format == GPU_TEXTURE_FORMAT_RGBA128) {
+		string_array_t *res = any_array_create_from_raw(
+		    (void *[]){
+		        "RGBA128",
+		        "RGBA128",
+		        "RGBA128",
+		        "R8",
+		    },
+		    4);
+		return res;
+	}
+
+	string_array_t *res = any_array_create_from_raw(
+	    (void *[]){
+	        "RGBA32",
+	        "RGBA32",
+	        "RGBA32",
+	        "R8",
+	    },
+	    4);
+	return res;
+}
+
+node_shader_context_t *make_paint_run(material_t *data) {
+	return make_paint_run_context(data, "paint");
+}
+
+node_shader_context_t *make_paint_run_context(material_t *data, char *context_id) {
+	bool picking_tool = g_context->tool == TOOL_TYPE_COLORID || g_context->tool == TOOL_TYPE_PICKER || g_context->tool == TOOL_TYPE_MATERIAL ||
+	                    g_context->tool == TOOL_TYPE_CURSOR;
+	bool is_atlas = string_equals(context_id, "atlas");
+	if (g_context->layer->texpaint_sculpt != NULL && !picking_tool && !g_context->material_preview) {
+		return sculpt_make_sculpt_run(data);
+	}
+
+	shader_context_t      *props     = ALLOC_INIT(shader_context_t, {.name            = context_id,
+	                                                                 .depth_write     = false,
+	                                                                 .compare_mode    = "always",
+	                                                                 .cull_mode       = "none",
+	                                                                 .vertex_elements = any_array_create_from_raw(
+                                                                (void *[]){
+                                                                    ALLOC_INIT(vertex_element_t, {.name = "pos", .data = "short4norm"}),
+                                                                    ALLOC_INIT(vertex_element_t, {.name = "nor", .data = "short2norm"}),
+                                                                    ALLOC_INIT(vertex_element_t, {.name = "tex", .data = "short2norm"}),
+                                                                },
+                                                                3),
+	                                                                 .color_attachments = make_paint_color_attachments()});
+	node_shader_context_t *con_paint = node_shader_context_create(data, props);
+
+	if (!is_atlas) {
+		if (mesh_data_get_vertex_array(g_context->paint_object->data, "col") != NULL) {
+			node_shader_context_add_elem(con_paint, "col", "short4norm");
+		}
+
+		if (mesh_data_get_vertex_array(g_context->paint_object->data, "tex1") != NULL) {
+			node_shader_context_add_elem(con_paint, "tex1", "short2norm");
+		}
+	}
+
+	con_paint->data->color_writes_red = u8_array_create_from_raw(
+	    (u8[]){
+	        true,
+	        true,
+	        true,
+	        true,
+	    },
+	    4);
+	con_paint->data->color_writes_green = u8_array_create_from_raw(
+	    (u8[]){
+	        true,
+	        true,
+	        true,
+	        true,
+	    },
+	    4);
+	con_paint->data->color_writes_blue = u8_array_create_from_raw(
+	    (u8[]){
+	        true,
+	        true,
+	        true,
+	        true,
+	    },
+	    4);
+	con_paint->data->color_writes_alpha = u8_array_create_from_raw(
+	    (u8[]){
+	        true,
+	        true,
+	        true,
+	        true,
+	    },
+	    4);
+	con_paint->allow_vcols = !is_atlas && mesh_data_get_vertex_array(g_context->paint_object->data, "col") != NULL;
+
+	node_shader_t *kong = node_shader_context_make_kong(con_paint);
+
+	if (g_context->tool == TOOL_TYPE_BAKE && g_context->bake_type == BAKE_TYPE_INIT) {
+		// Init raytraced bake
+		make_bake_position_normal(kong);
+		con_paint->data->shader_from_source = true;
+		gpu_create_shaders_from_kong(node_shader_get(kong), &con_paint->data->vertex_shader, &con_paint->data->fragment_shader,
+		                             &con_paint->data->_->vertex_shader_size, &con_paint->data->_->fragment_shader_size);
+		return con_paint;
+	}
+
+	if (g_context->tool == TOOL_TYPE_BAKE) {
+		make_bake_set_color_writes(con_paint);
+	}
+
+	if (g_context->tool == TOOL_TYPE_COLORID || g_context->tool == TOOL_TYPE_PICKER || g_context->tool == TOOL_TYPE_MATERIAL ||
+	    g_context->tool == TOOL_TYPE_CURSOR) {
+		make_picking_run(kong);
+		con_paint->data->shader_from_source = true;
+		gpu_create_shaders_from_kong(node_shader_get(kong), &con_paint->data->vertex_shader, &con_paint->data->fragment_shader,
+		                             &con_paint->data->_->vertex_shader_size, &con_paint->data->_->fragment_shader_size);
+		return con_paint;
+	}
+
+	bool face_fill      = g_context->tool == TOOL_TYPE_FILL && g_context->fill_type == FILL_TYPE_FACE;
+	bool uv_island_fill = g_context->tool == TOOL_TYPE_FILL && g_context->fill_type == FILL_TYPE_UV_ISLAND;
+	bool decal          = context_is_decal();
+
+	bool  accum         = g_context->tool == TOOL_TYPE_BLUR;
+	char *tex_src       = accum ? "texpaint_ref" : "texpaint_undo";
+	char *tex_nor_src   = accum ? "texpaint_nor_ref" : "texpaint_nor_undo";
+	char *tex_pack_src  = accum ? "texpaint_pack_ref" : "texpaint_pack_undo";
+	char *tex_src_link  = accum ? "_texpaint_ref" : "_texpaint_undo";
+	char *tex_nor_link  = accum ? "_texpaint_nor_ref" : "_texpaint_nor_undo";
+	char *tex_pack_link = accum ? "_texpaint_pack_ref" : "_texpaint_pack_undo";
+
+	char *tuv  = g_context->layer->uv_map == 1 ? "input.tex1" : "input.tex";
+	bool  udim = !is_atlas && util_mesh_udim_layer(g_context->layer);
+	if (is_atlas || udim) {
+		node_shader_add_constant(kong, "float3 atlas_transform", "_atlas_transform");
+		node_shader_write_vert(kong, string_tmp("float2 atlas_uv = %s * constants.atlas_transform.z + constants.atlas_transform.xy;", tuv));
+		tuv = "atlas_uv";
+	}
+	node_shader_write_vert(kong, string_tmp("float2 tpos = float2(%s.x * 2.0 - 1.0, (1.0 - %s.y) * 2.0 - 1.0);", tuv, tuv));
+
+	node_shader_write_vert(kong, "output.pos = float4(tpos, 0.0, 1.0);");
+
+	bool decal_layer = g_context->layer->fill_material != NULL && g_context->layer->uv_type == UV_TYPE_PROJECT;
+	if (decal_layer) {
+		node_shader_add_constant(kong, "float4x4 WVP", "_decal_layer_matrix");
+	}
+	else {
+		node_shader_add_constant(kong, "float4x4 WVP", "_world_view_proj_matrix");
+	}
+
+	node_shader_add_out(kong, "float4 ndc");
+	node_shader_write_attrib_vert(kong, "output.ndc = constants.WVP * float4(input.pos.xyz, 1.0);");
+
+	node_shader_write_attrib_frag(kong, "float3 sp = (input.ndc.xyz / input.ndc.w);");
+	node_shader_write_attrib_frag(kong, "sp.x = sp.x * 0.5 + 0.5;");
+	node_shader_write_attrib_frag(kong, "sp.y = sp.y * 0.5 + 0.5;");
+	node_shader_write_attrib_frag(kong, "sp.y = 1.0 - sp.y;");
+	node_shader_write_attrib_frag(kong, "sp.z -= 0.0001;"); // small bias
+
+	uv_type_t uv_type = g_context->layer->fill_material != NULL ? g_context->layer->uv_type : g_context->brush_paint;
+	if (uv_type == UV_TYPE_PROJECT) {
+		kong->frag_ndcpos = true;
+	}
+
+	node_shader_add_constant(kong, "float4 inp", "_input_brush");
+	node_shader_add_constant(kong, "float4 inplast", "_input_brush_last");
+	node_shader_add_constant(kong, "float aspect_ratio", "_aspect_ratio_window");
+	node_shader_write_frag(kong, "float2 bsp = sp.xy * 2.0 - 1.0;");
+	node_shader_write_frag(kong, "bsp.x *= constants.aspect_ratio;");
+	node_shader_write_frag(kong, "bsp = bsp * 0.5 + 0.5;");
+
+	// Select tool mask
+	if (g_context->select_active) {
+		node_shader_add_constant(kong, "float4 select_mask", "_select_mask");
+		node_shader_write_frag(kong, "if (sp.x < constants.select_mask.x || sp.x > constants.select_mask.z || sp.y < constants.select_mask.y || sp.y > "
+		                             "constants.select_mask.w) { discard; }");
+	}
+
+	node_shader_add_texture(kong, "gbufferD", NULL);
+
+	kong->frag_out = "float4[4]";
+
+	node_shader_add_constant(kong, "float brush_radius", "_brush_radius");
+	node_shader_add_constant(kong, "float brush_opacity", "_brush_opacity");
+	node_shader_add_constant(kong, "float brush_hardness", "_brush_hardness");
+
+	if (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER || g_context->tool == TOOL_TYPE_CLONE || g_context->tool == TOOL_TYPE_BLUR ||
+	    g_context->tool == TOOL_TYPE_PARTICLE || decal) {
+
+		bool depth_reject = !g_context->xray;
+		if (!g_config->brush_depth_reject) {
+			depth_reject = false;
+		}
+
+		bool particle = g_context->tool == TOOL_TYPE_PARTICLE;
+		if (!decal && !particle) {
+			if (g_context->sym_x || g_context->sym_y || g_context->sym_z) {
+				depth_reject = false;
+			}
+		}
+
+		if (depth_reject && !particle) {
+			node_shader_write_frag(kong, "if (sp.z > sample_lod(gbufferD, sampler_linear, sp.xy, 0.0).r - 0.00008) { discard; }");
+		}
+
+		make_brush_run(kong);
+	}
+	else { // Fill, Bake
+		node_shader_write_frag(kong, "float dist = 0.0;");
+		bool angle_fill = g_context->tool == TOOL_TYPE_FILL && g_context->fill_type == FILL_TYPE_ANGLE;
+		if (angle_fill) {
+			node_shader_add_function(kong, str_octahedron_wrap);
+			node_shader_add_texture(kong, "gbuffer0", NULL);
+			node_shader_write_frag(kong, "float2 g0 = sample_lod(gbuffer0, sampler_linear, constants.inp.xy, 0.0).rg;");
+			node_shader_write_frag(kong, "float3 wn;");
+			node_shader_write_frag(kong, "wn.z = 1.0 - abs(g0.x) - abs(g0.y);");
+			// node_shader_write_frag(kong, "wn.xy = wn.z >= 0.0 ? g0.xy : octahedron_wrap(g0.xy);");
+			node_shader_write_frag(kong,
+			                       "if (wn.z >= 0.0) { wn.x = g0.x; wn.y = g0.y; } else { float2 f2 = octahedron_wrap(g0.xy); wn.x = f2.x; wn.y = f2.y; }");
+			node_shader_write_frag(kong, "wn = normalize(wn);");
+			kong->frag_n = true;
+			f32 angle    = g_context->brush_angle_reject_dot;
+			node_shader_write_frag(kong, string_tmp("if (dot(wn, n) < %s) { discard; }", f32_to_string(angle)));
+		}
+		bool stencil_fill = g_context->tool == TOOL_TYPE_FILL && g_context->brush_stencil_image != NULL;
+		if (stencil_fill) {
+			node_shader_write_frag(kong, "if (sp.z > sample_lod(gbufferD, sampler_linear, sp.xy, 0.0).r - 0.00005) { discard; }");
+		}
+	}
+
+	if (g_context->colorid_picked || face_fill || uv_island_fill) {
+		node_shader_add_out(kong, "float2 tex_coord_pick");
+		node_shader_write_vert(kong, udim ? "output.tex_coord_pick = atlas_uv;" : "output.tex_coord_pick = input.tex;");
+		if (g_context->colorid_picked) {
+			make_discard_color_id(kong, "tex_coord_pick");
+		}
+		if (face_fill) {
+			make_discard_face(kong);
+		}
+		else if (uv_island_fill) {
+			make_discard_uv_island(kong);
+		}
+	}
+
+	if (g_context->picker_paint_mask) {
+		make_discard_material_id(kong, NULL);
+	}
+
+	make_texcoord_run(kong, is_atlas);
+
+	if (g_context->tool == TOOL_TYPE_CLONE || g_context->tool == TOOL_TYPE_BLUR) {
+		node_shader_add_texture(kong, "gbuffer2", NULL);
+		node_shader_add_constant(kong, "float2 gbuffer_size", "_gbuffer_size");
+		node_shader_add_texture(kong, tex_src, tex_src_link);
+		node_shader_add_texture(kong, tex_nor_src, tex_nor_link);
+		node_shader_add_texture(kong, tex_pack_src, tex_pack_link);
+
+		if (g_context->tool == TOOL_TYPE_CLONE) {
+			make_clone_run(kong);
+		}
+		else { // Blur, Smudge
+			make_blur_run(kong);
+		}
+	}
+	else {
+		parser_material_parse_emission     = g_context->material->paint_emis;
+		parser_material_parse_subsurface   = g_context->material->paint_subs;
+		parser_material_parse_height       = g_context->material->paint_height;
+		uv_type_t uv_type                  = g_context->layer->fill_material != NULL ? g_context->layer->uv_type : g_context->brush_paint;
+		parser_material_triplanar          = uv_type == UV_TYPE_TRIPLANAR && !decal;
+		parser_material_sample_keep_aspect = decal;
+		parser_material_sample_uv_scale    = is_atlas ? "1.0" : "constants.brush_scale";
+		shader_out_t *sout                 = parser_material_parse(g_context->material->canvas, con_paint, kong);
+		parser_material_parse_emission     = false;
+		parser_material_parse_subsurface   = false;
+		parser_material_parse_height       = false;
+		char *base                         = sout->out_basecol;
+		char *rough                        = sout->out_roughness;
+		char *met                          = sout->out_metallic;
+		char *occ                          = sout->out_occlusion;
+		char *nortan                       = parser_material_out_normaltan;
+		char *height                       = sout->out_height;
+		char *opac                         = sout->out_opacity;
+		char *emis                         = sout->out_emission;
+		char *subs                         = sout->out_subsurface;
+		node_shader_write_frag(kong, string_tmp("float3 basecol = %s;", base));
+		node_shader_write_frag(kong, string_tmp("float roughness = %s;", rough));
+		node_shader_write_frag(kong, string_tmp("float metallic = %s;", met));
+		node_shader_write_frag(kong, string_tmp("float occlusion = %s;", occ));
+		node_shader_write_frag(kong, string_tmp("float3 nortan = %s;", nortan));
+		node_shader_write_frag(kong, string_tmp("float height = %s;", height));
+		node_shader_write_frag(kong, string_tmp("float mat_opacity = %s;", opac));
+		if (g_context->material->paint_opac_mode == OPACITY_MODE_TRANSLUC) {
+			make_material_transluc_used = true;
+			node_shader_write_frag(kong, "float opacity = 1.0;");
+		}
+		else {
+			node_shader_write_frag(kong, "float opacity = mat_opacity;");
+		}
+
+		if (g_context->layer->fill_material == NULL) {
+			node_shader_write_frag(kong, "opacity *= constants.brush_opacity;");
+		}
+
+		if (g_context->material->paint_emis) {
+			node_shader_write_frag(kong, string_tmp("float emis = %s;", emis));
+		}
+		if (g_context->material->paint_subs) {
+			node_shader_write_frag(kong, string_tmp("float subs = %s;", subs));
+		}
+		if (!make_material_height_used && !make_paint_is_zero_constant(height)) {
+			make_material_height_used = true;
+		}
+		make_material_emis_used = parse_float(emis) != 0.0;
+		make_material_subs_used = parse_float(subs) != 0.0;
+	}
+
+	if (g_context->brush_mask_image != NULL && g_context->tool == TOOL_TYPE_DECAL) {
+		node_shader_add_texture(kong, "texbrushmask", "_texbrushmask");
+		node_shader_write_frag(kong, "float4 mask_sample = sample_lod(texbrushmask, sampler_linear, uvsp, 0.0);");
+		if (g_context->brush_mask_image_is_alpha) {
+			node_shader_write_frag(kong, "opacity *= mask_sample.a;");
+		}
+		else {
+			node_shader_write_frag(kong, "opacity *= mask_sample.r * mask_sample.a;");
+		}
+	}
+	else if (g_context->tool == TOOL_TYPE_TEXT) {
+		node_shader_add_texture(kong, "textexttool", "_textexttool");
+		node_shader_write_frag(kong, "opacity *= sample_lod(textexttool, sampler_linear, uvsp, 0.0).r;");
+	}
+
+	if (g_context->brush_stencil_image != NULL &&
+	    (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER || g_context->tool == TOOL_TYPE_FILL || g_context->tool == TOOL_TYPE_CLONE ||
+	     g_context->tool == TOOL_TYPE_BLUR || g_context->tool == TOOL_TYPE_PARTICLE || decal)) {
+		node_shader_add_texture(kong, "texbrushstencil", "_texbrushstencil");
+		node_shader_add_constant(kong, "float2 texbrushstencil_size", "_size(_texbrushstencil)");
+		node_shader_add_constant(kong, "float4 stencil_transform", "_stencil_transform");
+		node_shader_write_frag(
+		    kong, "float2 stencil_uv = (sp.xy - constants.stencil_transform.xy) / constants.stencil_transform.z * float2(constants.aspect_ratio, 1.0);");
+		node_shader_write_frag(kong, "float2 stencil_size = constants.texbrushstencil_size;");
+		node_shader_write_frag(kong, "float stencil_ratio = stencil_size.y / stencil_size.x;");
+		node_shader_write_frag(kong, "stencil_uv -= float2(0.5 / stencil_ratio, 0.5);");
+		node_shader_write_frag(kong,
+		                       "stencil_uv = float2(stencil_uv.x * cos(constants.stencil_transform.w) - stencil_uv.y * sin(constants.stencil_transform.w),\
+												   stencil_uv.x * sin(constants.stencil_transform.w) + stencil_uv.y * cos(constants.stencil_transform.w));");
+		node_shader_write_frag(kong, "stencil_uv += float2(0.5 / stencil_ratio, 0.5);");
+		node_shader_write_frag(kong, "stencil_uv.x *= stencil_ratio;");
+		node_shader_write_frag(kong, "if (stencil_uv.x < 0.0 || stencil_uv.x > 1.0 || stencil_uv.y < 0.0 || stencil_uv.y > 1.0) { discard; }");
+		node_shader_write_frag(kong, "float4 texbrushstencil_sample = sample_lod(texbrushstencil, sampler_linear, stencil_uv, 0.0);");
+		if (g_context->brush_stencil_image_is_alpha) {
+			node_shader_write_frag(kong, "opacity *= texbrushstencil_sample.a;");
+		}
+		else {
+			node_shader_write_frag(kong, "opacity *= texbrushstencil_sample.r * texbrushstencil_sample.a;");
+		}
+	}
+
+	if (g_context->brush_mask_image != NULL && (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER)) {
+		// Project mask onto mesh surface
+		node_shader_add_texture(kong, "texbrushmask", "_texbrushmask");
+		node_shader_add_function(kong, str_octahedron_wrap);
+		node_shader_add_texture(kong, "gbuffer0", NULL);
+		node_shader_add_constant(kong, "float3 camera_right", "_camera_right");
+		node_shader_add_constant(kong, "float3 camera_up", "_camera_up");
+		node_shader_add_constant(kong, "float camera_align", "_brush_camera_align");
+		node_shader_add_constant(kong, "float4x4 VP", "_view_proj_matrix");
+		node_shader_write_frag(kong, "float2 mn0 = sample_lod(gbuffer0, sampler_linear, constants.inp.xy, 0.0).rg;");
+		node_shader_write_frag(kong, "float3 mn;");
+		node_shader_write_frag(kong, "mn.z = 1.0 - abs(mn0.x) - abs(mn0.y);");
+		node_shader_write_frag(kong,
+		                       "if (mn.z >= 0.0) { mn.x = mn0.x; mn.y = mn0.y; } else { float2 mfw = octahedron_wrap(mn0.xy); mn.x = mfw.x; mn.y = mfw.y; }");
+		node_shader_write_frag(kong, "mn = normalize(mn);");
+		node_shader_write_frag(kong, "float3 mr = constants.camera_right;");
+		node_shader_write_frag(kong, "if (abs(dot(mn, mr)) > 0.999) { mr = float3(0.0, 0.0, 1.0); }");
+		node_shader_write_frag(kong, "float3 mt = normalize(mr - mn * dot(mr, mn));");
+		node_shader_write_frag(kong, "float3 mb = cross(mt, mn);");
+		node_shader_write_frag(kong, "float3 pa_mask_3d = input.wposition - winp.xyz;");
+		node_shader_write_frag(kong, "float2 pa_mask;");
+		node_shader_write_frag(kong, "if (constants.camera_align > 0.0) {");
+		node_shader_write_frag(kong, "float mvp_up_y = (constants.VP * float4(constants.camera_up, 0.0)).y;");
+		node_shader_write_frag(kong, "float2 msa = sp.xy - constants.inp.xy;");
+		node_shader_write_frag(kong, "msa.x *= constants.aspect_ratio;");
+		node_shader_write_frag(kong, "pa_mask = msa * (2.0 / (mvp_up_y * winp.w));");
+		node_shader_write_frag(kong, "}");
+		node_shader_write_frag(kong, "else {");
+		node_shader_write_frag(kong, "pa_mask = float2(dot(pa_mask_3d, mt), dot(pa_mask_3d, mb));");
+		node_shader_write_frag(kong, "}");
+		if (g_context->brush_directional) {
+			node_shader_add_constant(kong, "float3 brush_direction", "_brush_direction");
+			node_shader_write_frag(kong, "if (constants.brush_direction.z == 0.0) { discard; }");
+			node_shader_write_frag(kong, "pa_mask = float2(pa_mask.x * constants.brush_direction.x - pa_mask.y * constants.brush_direction.y, pa_mask.x * "
+			                             "constants.brush_direction.y + pa_mask.y * constants.brush_direction.x);");
+		}
+		f32 angle = g_context->brush_angle + g_context->brush_nodes_angle;
+		if (angle != 0.0) {
+			node_shader_add_constant(kong, "float2 brush_angle", "_brush_angle");
+			node_shader_write_frag(kong, "pa_mask.xy = float2(pa_mask.x * constants.brush_angle.x - pa_mask.y * constants.brush_angle.y, pa_mask.x * "
+			                             "constants.brush_angle.y + pa_mask.y * constants.brush_angle.x);");
+		}
+		node_shader_write_frag(kong, "pa_mask = pa_mask / constants.brush_radius * 0.5 + 0.5;");
+		node_shader_write_frag(kong, "float4 mask_sample = sample_lod(texbrushmask, sampler_linear, pa_mask, 0.0);");
+		if (g_context->brush_mask_image_is_alpha) {
+			node_shader_write_frag(kong, "opacity *= mask_sample.a;");
+		}
+		else {
+			node_shader_write_frag(kong, "opacity *= mask_sample.r * mask_sample.a;");
+		}
+	}
+
+	node_shader_write_frag(kong, string_tmp("if (opacity <= float(%s)) { discard; }", f32_to_string(g_config->brush_alpha_discard)));
+
+	if (g_context->tool == TOOL_TYPE_PARTICLE) { // Particle mask
+		make_particle_mask(kong);
+	}
+	else { // Brush cursor mask
+		node_shader_write_frag(kong, "float t = dist / constants.brush_radius;");
+		node_shader_write_frag(kong, "float t2 = clamp((t - constants.brush_hardness) / max(1.0 - constants.brush_hardness, 0.001), 0.0, 1.0);");
+		node_shader_write_frag(kong, "float str = (1.0 - t2 * t2 * (3.0 - 2.0 * t2)) * opacity;");
+	}
+
+	if (g_context->tool == TOOL_TYPE_CLONE) {
+		node_shader_write_frag(kong, "str *= clone_src_alpha;");
+	}
+
+	// Manual blending to preserve memory
+	kong->frag_wvpposition = true;
+	node_shader_write_frag(kong,
+	                       "float2 sample_tc = float2(input.wvpposition.x / input.wvpposition.w, input.wvpposition.y / input.wvpposition.w) * 0.5 + 0.5;");
+	node_shader_write_frag(kong, "sample_tc.y = 1.0 - sample_tc.y;");
+	node_shader_add_texture(kong, "paintmask", NULL);
+	node_shader_write_frag(kong, "float sample_mask = sample_lod(paintmask, sampler_linear, sample_tc, 0.0).r;");
+	if (accum) {
+		node_shader_write_frag(kong, "str *= 0.5;");
+	}
+	else {
+		node_shader_write_frag(kong, "float base_str = max(str, sample_mask);");
+		node_shader_write_frag(kong, "str = base_str + str * (1.0 - base_str) * 0.1;");
+	}
+
+	node_shader_add_texture(kong, tex_src, tex_src_link);
+	node_shader_write_frag(kong, string_tmp("float4 sample_undo = sample_lod(%s, sampler_linear, sample_tc, 0.0);", tex_src));
+
+	f32 matid = g_context->material->id / 255.0;
+	if (g_context->picker_paint_mask) {
+		matid = g_context->materialid_picked / 255.0; // Keep existing material id in place when mask is set
+	}
+	char *matid_string = parser_material_vec1(matid * 3.0);
+	node_shader_write_frag(kong, string_tmp("float matid = %s;", matid_string));
+
+	// matid % 3 == 0 - normal, 1 - emission, 2 - subsurface
+	if (g_context->material->paint_emis && make_material_emis_used) {
+		node_shader_write_frag(kong, "if (emis > 0.0) {");
+		node_shader_write_frag(kong, "	matid += 1.0 / 255.0;");
+		node_shader_write_frag(kong, "	if (str == 0.0) { discard; }");
+		node_shader_write_frag(kong, "}");
+	}
+	else if (g_context->material->paint_subs && make_material_subs_used) {
+		node_shader_write_frag(kong, "if (subs > 0.0) {");
+		node_shader_write_frag(kong, "	matid += 2.0 / 255.0;");
+		node_shader_write_frag(kong, "	if (str == 0.0) { discard; }");
+		node_shader_write_frag(kong, "}");
+	}
+
+	if (g_context->tool == TOOL_TYPE_ERASER) {
+		node_shader_write_frag(kong, "basecol = float3(0.0, 0.0, 0.0);");
+		node_shader_write_frag(kong, "nortan = float3(0.5, 0.5, 1.0);");
+		node_shader_write_frag(kong, "occlusion = 1.0;");
+		node_shader_write_frag(kong, "roughness = 0.0;");
+		node_shader_write_frag(kong, "metallic = 0.0;");
+		node_shader_write_frag(kong, "height = 0.0;");
+	}
+
+	// Output
+	node_shader_add_texture(kong, tex_nor_src, tex_nor_link);
+	node_shader_add_texture(kong, tex_pack_src, tex_pack_link);
+	node_shader_write_frag(kong, string_tmp("float4 sample_nor_undo = sample_lod(%s, sampler_linear, sample_tc, 0.0);", tex_nor_src));
+	node_shader_write_frag(kong, string_tmp("float4 sample_pack_undo = sample_lod(%s, sampler_linear, sample_tc, 0.0);", tex_pack_src));
+
+	bool is_mask = slot_layer_is_mask(g_context->layer);
+	if (g_context->tool == TOOL_TYPE_ERASER && !is_mask) {
+		node_shader_write_frag(kong, "float out_a = sample_undo.a * (1.0 - str);");
+		node_shader_write_frag(kong, "output[0] = float4(sample_undo.rgb, out_a);");
+	}
+	else if (g_context->tool == TOOL_TYPE_BLUR && !is_mask) {
+		node_shader_write_frag(kong, "float t_blur = str / max(blur_src_alpha, 0.0000001);");
+		node_shader_write_frag(kong, "float out_a = str + sample_undo.a * (1.0 - t_blur);");
+		node_shader_write_frag(kong,
+		                       "output[0] = float4((basecol * t_blur + sample_undo.rgb * sample_undo.a * (1.0 - t_blur)) / max(out_a, 0.0000001), out_a);");
+	}
+	else if (g_context->material->paint_opac_mode == OPACITY_MODE_TRANSLUC || g_context->layer->fill_material != NULL) {
+		node_shader_write_frag(kong, string_tmp("output[0] = float4(%s, %s);",
+		                                        make_material_blend_mode(kong, g_context->brush_blending, "sample_undo.rgb", "basecol", "str"), "mat_opacity"));
+	}
+	else if (g_context->brush_blending == BLEND_TYPE_MIX && !is_mask) {
+		node_shader_write_frag(kong, "float out_a = str + sample_undo.a * (1.0 - str);");
+		node_shader_write_frag(kong, "output[0] = float4((basecol * str + sample_undo.rgb * sample_undo.a * (1.0 - str)) / max(out_a, 0.0000001), out_a);");
+	}
+	else {
+		node_shader_write_frag(kong, "float out_a = str + sample_undo.a * (1.0 - str);");
+		node_shader_write_frag(kong, string_tmp("output[0] = float4(%s, %s);",
+		                                        make_material_blend_mode(kong, g_context->brush_blending, "sample_undo.rgb", "basecol", "str"), "out_a"));
+	}
+	node_shader_write_frag(kong, "output[1] = float4(lerp(sample_nor_undo.rgb, nortan, str), matid);");
+	node_shader_write_frag(kong, "output[2] = lerp(sample_pack_undo, float4(occlusion, roughness, metallic, height), str);");
+	node_shader_write_frag(kong, "output[3] = float4(str, 0.0, 0.0, 1.0);");
+
+	if (!g_context->material->paint_base) {
+		con_paint->data->color_writes_red->buffer[0]   = false;
+		con_paint->data->color_writes_green->buffer[0] = false;
+		con_paint->data->color_writes_blue->buffer[0]  = false;
+	}
+	if (!g_context->material->paint_opac) {
+		con_paint->data->color_writes_alpha->buffer[0] = false;
+	}
+	if (!g_context->material->paint_nor) {
+		con_paint->data->color_writes_red->buffer[1]   = false;
+		con_paint->data->color_writes_green->buffer[1] = false;
+		con_paint->data->color_writes_blue->buffer[1]  = false;
+	}
+	if (!g_context->material->paint_occ) {
+		con_paint->data->color_writes_red->buffer[2] = false;
+	}
+	if (!g_context->material->paint_rough) {
+		con_paint->data->color_writes_green->buffer[2] = false;
+	}
+	if (!g_context->material->paint_met) {
+		con_paint->data->color_writes_blue->buffer[2] = false;
+	}
+	if (!g_context->material->paint_height) {
+		con_paint->data->color_writes_alpha->buffer[2] = false;
+	}
+
+	if (is_mask) {
+		// Base color only
+		con_paint->data->color_writes_green->buffer[0] = false;
+		con_paint->data->color_writes_blue->buffer[0]  = false;
+		con_paint->data->color_writes_alpha->buffer[0] = false;
+		con_paint->data->color_writes_red->buffer[1]   = false;
+		con_paint->data->color_writes_green->buffer[1] = false;
+		con_paint->data->color_writes_blue->buffer[1]  = false;
+		con_paint->data->color_writes_alpha->buffer[1] = false;
+		con_paint->data->color_writes_red->buffer[2]   = false;
+		con_paint->data->color_writes_green->buffer[2] = false;
+		con_paint->data->color_writes_blue->buffer[2]  = false;
+		con_paint->data->color_writes_alpha->buffer[2] = false;
+	}
+
+	if (g_context->tool == TOOL_TYPE_BAKE) {
+		make_bake_run(con_paint, kong);
+	}
+
+	parser_material_finalize(con_paint);
+	parser_material_triplanar          = false;
+	parser_material_sample_keep_aspect = false;
+
+	sculpt_make_paint_run(kong);
+
+	con_paint->data->shader_from_source = true;
+	gpu_create_shaders_from_kong(node_shader_get(kong), &con_paint->data->vertex_shader, &con_paint->data->fragment_shader,
+	                             &con_paint->data->_->vertex_shader_size, &con_paint->data->_->fragment_shader_size);
+
+	return con_paint;
+}

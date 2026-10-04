@@ -1,0 +1,37 @@
+#version 450
+/*
+ * Qwen3 per-head RMSNorm for Q/K normalization. Each (row, head) slice of
+ * head_dim is normalized independently and scaled by a bf16 weight[head_dim].
+ * In-place safe: bind the same buffer to In (0) and Out (2). One thread per
+ * (row, head); head_dim is small so the per-thread loop is cheap.
+ */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer In  { float x[]; };
+layout(std430, binding = 1) readonly  buffer W   { uint  wbf[]; };
+layout(std430, binding = 2) writeonly buffer Out { float outp[]; };
+
+layout(push_constant) uniform PC { uint rows, num_heads, head_dim; float eps; } pc;
+
+float load_bf16(uint e) {
+    uint w = wbf[e >> 1u];
+    uint h = ((e & 1u) == 0u) ? (w & 0xffffu) : (w >> 16u);
+    return uintBitsToFloat(h << 16u);
+}
+
+void main() {
+    uint total = pc.rows * pc.num_heads;
+    uint stride_g = gl_NumWorkGroups.x * 256u;
+    for (uint t = gl_GlobalInvocationID.x; t < total; t += stride_g) {
+        uint base = t * pc.head_dim;   /* row*num_heads*head_dim + head*head_dim */
+        float sq = 0.0;
+        for (uint i = 0u; i < pc.head_dim; i++) {
+            float v = x[base + i];
+            sq += v * v;
+        }
+        float inv = inversesqrt(sq / float(pc.head_dim) + pc.eps);
+        for (uint i = 0u; i < pc.head_dim; i++) {
+            outp[base + i] = x[base + i] * inv * load_bf16(i);
+        }
+    }
+}

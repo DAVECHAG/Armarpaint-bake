@@ -1,0 +1,7 @@
+{
+	"action_paint": "left",
+	"action_rotate": "middle",
+	"action_pan": "shift+middle",
+	"action_zoom": "ctrl+middle",
+	"rotate_envmap": "ctrl+right"
+}

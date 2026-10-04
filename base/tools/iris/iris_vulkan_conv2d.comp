@@ -1,0 +1,51 @@
+#version 450
+/* Direct NCHW conv2d. One invocation per output element; loops the receptive
+ * field. Weight is OIHW [out_ch, in_ch, kH, kW], bias is [out_ch]. Keeps all
+ * data resident on the GPU (no im2col staging). */
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer In  { float x[]; };
+layout(std430, binding = 1) readonly  buffer Wt  { float wt[]; };
+layout(std430, binding = 2) readonly  buffer Bs  { float bs[]; };
+layout(std430, binding = 3) writeonly buffer Out { float outp[]; };
+
+layout(push_constant) uniform PC {
+    uint batch, in_ch, out_ch, H, W, kH, kW, stride, pad, outH, outW, has_bias, circular;
+} pc;
+
+/* Wrap a coordinate into [0, n) for circular (toroidal) padding. */
+int wrap_coord(int c, int n) {
+    c %= n;
+    if (c < 0) c += n;
+    return c;
+}
+
+void main() {
+    uint total = pc.batch * pc.out_ch * pc.outH * pc.outW;
+    uint stride_g = gl_NumWorkGroups.x * 256u;
+    for (uint idx = gl_GlobalInvocationID.x; idx < total; idx += stride_g) {
+        uint ox = idx % pc.outW;
+        uint t  = idx / pc.outW;
+        uint oy = t % pc.outH;  t /= pc.outH;
+        uint oc = t % pc.out_ch;
+        uint b  = t / pc.out_ch;
+
+        float sum = (pc.has_bias != 0u) ? bs[oc] : 0.0;
+        for (uint ic = 0u; ic < pc.in_ch; ic++) {
+            for (uint kh = 0u; kh < pc.kH; kh++) {
+                int iy = int(oy * pc.stride + kh) - int(pc.pad);
+                if (pc.circular != 0u) iy = wrap_coord(iy, int(pc.H));
+                else if (iy < 0 || iy >= int(pc.H)) continue;
+                for (uint kw = 0u; kw < pc.kW; kw++) {
+                    int ix = int(ox * pc.stride + kw) - int(pc.pad);
+                    if (pc.circular != 0u) ix = wrap_coord(ix, int(pc.W));
+                    else if (ix < 0 || ix >= int(pc.W)) continue;
+                    uint in_idx = ((b * pc.in_ch + ic) * pc.H + uint(iy)) * pc.W + uint(ix);
+                    uint w_idx  = ((oc * pc.in_ch + ic) * pc.kH + kh) * pc.kW + kw;
+                    sum += x[in_idx] * wt[w_idx];
+                }
+            }
+        }
+        outp[idx] = sum;
+    }
+}
