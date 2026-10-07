@@ -334,6 +334,8 @@ void history_undo() {
 			if (step->layer_type == LAYER_SLOT_TYPE_GROUP) {
 				sys_notify_on_next_frame(&history_undo_delete_layer_group, NULL);
 			}
+
+			tab_stages_add_layer(l->name);
 		}
 		else if (step->action == HISTORY_ACTION_CLEAR_LAYER) {
 			history_undo_i    = history_undo_i - 1 < 0 ? g_config->undo_steps - 1 : history_undo_i - 1;
@@ -535,6 +537,7 @@ void history_undo() {
 			ui_menubar_menu_handle->redraws = 2;
 		}
 	}
+	base_redraw_status();
 }
 
 void history_redo_invert_mask(history_step_t *step) {
@@ -850,6 +853,7 @@ void history_redo() {
 			ui_menubar_menu_handle->redraws = 2;
 		}
 	}
+	base_redraw_status();
 }
 
 void history_reset() {
