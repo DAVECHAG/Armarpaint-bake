@@ -1,5 +1,9 @@
 // Text editor panel
 
+#ifdef IRON_WINDOWS
+#include <sys/stat.h>
+#endif
+
 ui_window_t        *editor_hwnd        = NULL;
 any_map_t          *editor_buffers     = NULL; // Opened files by path
 any_array_t        *editor_buffer_list = NULL;
