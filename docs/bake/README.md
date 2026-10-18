@@ -51,7 +51,8 @@ With the header pinned, painting tools show: advanced options (UV scale, angle, 
 
 | Normal (World) | Cavity |
 |---|---|
-| ![](viewport_normal_world.png) | ![](viewport_cavity.png) |
+|<img width="1162" height="729" alt="image" src="https://github.com/user-attachments/assets/21d50d09-ee00-4a76-8e49-c91c065c3919" />
+ | ![](viewport_cavity.png) |
 
 ## Other changes
 
