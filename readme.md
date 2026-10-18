@@ -1,4 +1,4 @@
-![](https://armorpaint.org/img/git.jpg)
+![](Armorpaint_bake.png)
 
 armorpaint
 ==============
