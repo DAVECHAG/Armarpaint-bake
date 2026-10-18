@@ -26,7 +26,10 @@ void util_shortcut_undo_redo() {
 		}
 	}
 
-	if (undo_pressed) {
+	if (undo_pressed && g_context->tool == TOOL_TYPE_INPAINT && inpaint_can_undo()) {
+		inpaint_undo_last(); // Inpaint rewrites the baked files, outside the layer history
+	}
+	else if (undo_pressed) {
 		history_undo();
 	}
 	else if (redo_pressed) {
@@ -244,6 +247,11 @@ void util_shortcut_viewport() {
 			else if (keymap_shortcut(any_map_get(g_keymap, "tool_select"), SHORTCUT_TYPE_STARTED)) {
 				context_select_tool(TOOL_TYPE_SELECT);
 			}
+			else if (keymap_shortcut(any_map_get(g_keymap, "tool_inpaint") != NULL ? any_map_get(g_keymap, "tool_inpaint") : "i", SHORTCUT_TYPE_STARTED)) {
+				if (ui_toolbar_tool_visible(TOOL_TYPE_INPAINT)) {
+					context_select_tool(TOOL_TYPE_INPAINT);
+				}
+			}
 			else if (keymap_shortcut(any_map_get(g_keymap, "swap_brush_eraser"), SHORTCUT_TYPE_STARTED)) {
 				context_select_tool(g_context->tool == TOOL_TYPE_BRUSH ? TOOL_TYPE_ERASER : TOOL_TYPE_BRUSH);
 			}
@@ -252,7 +260,7 @@ void util_shortcut_viewport() {
 		// Radius
 		if (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER || g_context->tool == TOOL_TYPE_DECAL ||
 		    g_context->tool == TOOL_TYPE_TEXT || g_context->tool == TOOL_TYPE_CLONE || g_context->tool == TOOL_TYPE_BLUR ||
-		    g_context->tool == TOOL_TYPE_PARTICLE) {
+		    g_context->tool == TOOL_TYPE_PARTICLE || g_context->tool == TOOL_TYPE_INPAINT) {
 			if (keymap_shortcut(any_map_get(g_keymap, "brush_radius"), SHORTCUT_TYPE_STARTED) ||
 			    keymap_shortcut(any_map_get(g_keymap, "brush_opacity"), SHORTCUT_TYPE_STARTED) ||
 			    keymap_shortcut(any_map_get(g_keymap, "brush_angle"), SHORTCUT_TYPE_STARTED) ||

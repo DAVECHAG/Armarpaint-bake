@@ -176,6 +176,10 @@ viewport_mode_t ui_menubar_string_to_viewport_mode(char *s) {
 		return VIEWPORT_MODE_MASK;
 	if (string_equals(s, tr("Path Traced")))
 		return VIEWPORT_MODE_PATH_TRACE;
+	if (string_equals(s, tr("Normal (World)")))
+		return VIEWPORT_MODE_NORMAL_WORLD;
+	if (string_equals(s, tr("Cavity")))
+		return VIEWPORT_MODE_CAVITY;
 	return VIEWPORT_MODE_LIT;
 }
 
@@ -212,6 +216,10 @@ char *ui_menubar_viewport_mode_to_string(viewport_mode_t m) {
 		return "Mask";
 	if (m == VIEWPORT_MODE_PATH_TRACE)
 		return "Path Traced";
+	if (m == VIEWPORT_MODE_NORMAL_WORLD)
+		return "Normal (World)";
+	if (m == VIEWPORT_MODE_CAVITY)
+		return "Cavity";
 	return "Lit";
 }
 
@@ -302,6 +310,9 @@ void ui_menubar_draw_category_items() {
 		}
 		if (ui_menu_button(tr("Bake Material..."), "", ICON_BAKE)) {
 			box_export_show_bake_material();
+		}
+		if (ui_menu_button(tr("Bake Mesh Maps..."), "", ICON_BAKE)) {
+			box_bake_show();
 		}
 		ui_menu_separator();
 		if (ui_menu_button(tr("Exit"), "", ICON_EXIT)) {
@@ -523,8 +534,9 @@ void ui_menubar_draw_category_items() {
 			array_splice(shortcuts, 4, 1);
 			array_splice(shortcuts, 3, 1);
 			array_splice(shortcuts, 2, 1);
-			mode = string_array_index_of(modes, ui_menubar_viewport_mode_to_string(mode));
 		}
+		// Menu order differs from the enum order, find the entry by name
+		mode = string_array_index_of(modes, tr(ui_menubar_viewport_mode_to_string(g_context->viewport_mode)));
 
 		for (i32 i = 0; i < modes->length; ++i) {
 			char *shortcut = g_config->touch_ui ? "" : string_tmp("%s, %s", any_map_get(g_keymap, "viewport_mode"), shortcuts->buffer[i]);
@@ -889,6 +901,9 @@ void ui_menubar_render_ui() {
 			if (ui_menubar_icon_button(ICON_EXPORT)) {
 				box_export_show_textures();
 			}
+			if (ui_menubar_icon_button(ICON_BAKE)) {
+				box_bake_show();
+			}
 			i32 size = math_floor(g_ui->_w / (float)UI_SCALE());
 			if (ui_menu_show && ui_menubar_category == MENUBAR_CATEGORY_VIEWPORT) {
 				ui_fill(0, -6, size, size - 4, g_theme->HIGHLIGHT_COL);
@@ -953,6 +968,10 @@ void ui_menubar_render_ui() {
 				if (ui_menubar_button(categories->buffer[i]) || (ui_menu_show && ui_menu_commands == ui_menubar_draw_category_items && g_ui->is_hovered)) {
 					ui_menubar_show_menu(i);
 				}
+			}
+
+			if (ui_menubar_button(tr("Bake"))) {
+				box_bake_show();
 			}
 		}
 

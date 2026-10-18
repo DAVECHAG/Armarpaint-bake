@@ -167,7 +167,10 @@
 #include "traits/trait_point_and_click_controller.c"
 #include "traits/trait_third_person_controller.c"
 
+#include "util/util_bake_rays.c"
 #include "ui/box_append.c"
+#include "ui/box_bake.c"
+#include "util/util_inpaint.c"
 #include "ui/box_export.c"
 #include "ui/box_import_mesh.c"
 #include "ui/box_new_project.c"
@@ -191,6 +194,7 @@
 #include "ui/ui_box.c"
 #include "ui/ui_dock.c"
 #include "ui/ui_files.c"
+#include "ui/ui_brush_bar.c"
 #include "ui/ui_header.c"
 #include "ui/ui_menu.c"
 #include "ui/ui_menubar.c"
@@ -301,9 +305,9 @@ void _kickstart() {
 	        _tr("Cursor"),
 	        _tr("Select"),
 	        _tr("Bake"), // Hidden, used by Bake Texture node
+	        _tr("Inpaint"),
 	    },
-	    14);
-	ui_toolbar_tool_names->length--; // Hide Bake tool
+	    15);
 
 	ui_toolbar_tooltip_extras = any_array_create_from_raw(
 	    (void *[]){
@@ -320,8 +324,10 @@ void _kickstart() {
 	        "",
 	        "",
 	        "",
+	        "",
+	        _tr("Paint over bake artifacts, they are repaired when the mouse is released"),
 	    },
-	    13);
+	    15);
 
 	uniforms_ext_ortho_p    = mat4_ortho(-0.5, 0.5, -0.5, 0.5, -0.5, 0.5);
 	import_mesh_importers   = any_map_create();

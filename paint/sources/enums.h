@@ -31,6 +31,7 @@ typedef enum {
 	BAKE_TYPE_LIGHTMAP      = 11,
 	BAKE_TYPE_BENT_NORMAL   = 12,
 	BAKE_TYPE_THICKNESS     = 13,
+	BAKE_TYPE_CAVITY        = 14, // Short range occlusion, cpu only
 } bake_type_t;
 
 typedef enum {
@@ -73,6 +74,8 @@ typedef enum {
 	VIEWPORT_MODE_OBJECT_ID     = 13,
 	VIEWPORT_MODE_MASK          = 14,
 	VIEWPORT_MODE_PATH_TRACE    = 15,
+	VIEWPORT_MODE_NORMAL_WORLD  = 16, // Final normal after the normal map, in world space
+	VIEWPORT_MODE_CAVITY        = 17, // Baked cavity map of the mesh
 } viewport_mode_t;
 
 // Layouts to reset the docked tabs to
@@ -267,6 +270,7 @@ typedef enum {
 	TOOL_TYPE_CURSOR   = 11,
 	TOOL_TYPE_SELECT   = 12,
 	TOOL_TYPE_BAKE     = 13, // Hidden, used by Bake Texture node
+	TOOL_TYPE_INPAINT  = 14, // Repairs baked maps under a painted mask
 } tool_type_t;
 
 typedef enum {

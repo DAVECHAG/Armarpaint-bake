@@ -422,6 +422,22 @@ gpu_texture_t *uniforms_ext_tex_link(object_t *object, shader_data_t *mat, char 
 	else if (string_equals(link, "_sculpt_adj1")) {
 		return sculpt_get_adj_texture(1);
 	}
+	else if (string_equals(link, "_texinpaint_mask")) {
+		gpu_texture_t *image = inpaint_preview_image();
+		return image != NULL ? image : ((render_target_t *)any_map_get(render_path_render_targets, "empty_black"))->_image;
+	}
+	else if (string_equals(link, "_texbaked_cavity")) {
+		gpu_texture_t *image = box_bake_mesh_map_image("cavity");
+		return image != NULL ? image : ((render_target_t *)any_map_get(render_path_render_targets, "empty_white"))->_image;
+	}
+	else if (string_equals(link, "_texbaked_ao")) {
+		gpu_texture_t *image = box_bake_mesh_map_image("ao");
+		return image != NULL ? image : ((render_target_t *)any_map_get(render_path_render_targets, "empty_white"))->_image;
+	}
+	else if (string_equals(link, "_texbaked_nor")) {
+		gpu_texture_t *image = box_bake_mesh_map_image("normal");
+		return image != NULL ? image : ((render_target_t *)any_map_get(render_path_render_targets, "empty_white"))->_image;
+	}
 	else if (string_equals(link, "_texcolorid")) {
 		if (g_project->_->assets->length == 0) {
 			render_target_t *rt = any_map_get(render_path_render_targets, "empty_white");

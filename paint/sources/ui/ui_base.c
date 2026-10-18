@@ -102,16 +102,13 @@ void ui_base_init() {
 }
 
 void ui_base_menu_draw_viewport_mode() {
-	i32  mode         = g_context->viewport_mode;
 	bool mode_changed = false;
 	ui_text(tr("Viewport Mode"), UI_ALIGN_RIGHT, 0x00000000);
 
 	string_array_t *modes     = base_get_viewport_modes();
 	string_array_t *shortcuts = base_get_viewport_mode_shortcuts();
-	if (gpu_raytrace_supported()) {
-		any_array_push(modes, tr("Path Traced"));
-		any_array_push(shortcuts, "p");
-	}
+	// Menu order differs from the enum order, find the entry by name
+	i32 mode = string_array_index_of(modes, tr(ui_menubar_viewport_mode_to_string(g_context->viewport_mode)));
 	for (i32 i = 0; i < modes->length; ++i) {
 		ui_radio(&mode, i, modes->buffer[i], shortcuts->buffer[i]);
 		mode_changed |= ui_item_changed();
@@ -120,10 +117,10 @@ void ui_base_menu_draw_viewport_mode() {
 	i32 index = string_array_index_of(shortcuts, keyboard_key_code(g_ui->key_code));
 	if (g_ui->is_key_pressed && index != -1) {
 		g_ui->changed = true;
-		context_set_viewport_mode(index);
+		context_set_viewport_mode(ui_menubar_string_to_viewport_mode(modes->buffer[index]));
 	}
 	else if (mode_changed) {
-		context_set_viewport_mode(mode);
+		context_set_viewport_mode(ui_menubar_string_to_viewport_mode(modes->buffer[mode]));
 		g_ui->changed = true;
 	}
 }

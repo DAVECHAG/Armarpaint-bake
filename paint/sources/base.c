@@ -558,6 +558,8 @@ void base_init() {
 	ui_view2d_init();
 
 	sys_notify_on_update(base_update, NULL);
+	sys_notify_on_update(box_bake_watch_viewport_maps, NULL);
+	sys_notify_on_update(inpaint_update, NULL);
 
 	scene_camera->data->fov = math_floor(scene_camera->data->fov * 100) / 100.0;
 	camera_object_build_proj(scene_camera, -1.0);
@@ -1121,8 +1123,10 @@ string_array_t *base_get_viewport_modes() {
 	        tr("Material ID"),
 	        tr("Object ID"),
 	        tr("Mask"),
+	        tr("Normal (World)"),
+	        tr("Cavity"),
 	    },
-	    15);
+	    17);
 
 	if (gpu_raytrace_supported()) {
 		any_array_push(modes, tr("Path Traced"));
@@ -1149,8 +1153,10 @@ string_array_t *base_get_viewport_mode_shortcuts() {
 	        "2",
 	        "3",
 	        "4",
+	        "w",
+	        "c",
 	    },
-	    15);
+	    17);
 
 	if (gpu_raytrace_supported()) {
 		any_array_push(shortcuts, "p");

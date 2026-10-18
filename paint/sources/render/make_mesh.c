@@ -1,4 +1,4 @@
-
+﻿
 #include "../global.h"
 
 char *str_sh_irradiance = "\
@@ -112,12 +112,15 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 	                                                                  .depth_attachment = "D32"});
 	node_shader_context_t *con_mesh   = node_shader_context_create(data, props);
 
-	if (mesh_data_get_vertex_array(g_context->paint_object->data, "col") != NULL) {
-		node_shader_context_add_elem(con_mesh, "col", "short4norm");
-	}
-
-	if (mesh_data_get_vertex_array(g_context->paint_object->data, "tex1") != NULL) {
-		node_shader_context_add_elem(con_mesh, "tex1", "short2norm");
+	// Extra vertex arrays in the order the mesh interleaves them (attribute offsets follow the declaration order)
+	bool                    has_tang = false;
+	vertex_array_t_array_t *vas      = g_context->paint_object->data->vertex_arrays;
+	for (i32 i = 3; i < vas->length; ++i) {
+		vertex_array_t *va = vas->buffer[i];
+		if (string_equals(va->attrib, "col") || string_equals(va->attrib, "tex1") || string_equals(va->attrib, "tang")) {
+			node_shader_context_add_elem(con_mesh, va->attrib, va->data);
+			has_tang |= string_equals(va->attrib, "tang");
+		}
 	}
 
 	node_shader_t *kong = node_shader_context_make_kong(con_mesh);
@@ -253,6 +256,12 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 			node_shader_add_texture(kong, "senvmap_radiance3", "_envmap_radiance3");
 			node_shader_add_texture(kong, "senvmap_radiance4", "_envmap_radiance4");
 		}
+
+		// Baked mesh maps of the paint object, applied in the last pass unless a fill layer already uses them
+		gpu_texture_t *baked_ao  = box_bake_mesh_map_viewport("ao");
+		gpu_texture_t *baked_nor = box_bake_mesh_map_viewport("normal");
+		texture_count += (baked_ao != NULL ? 1 : 0) + (baked_nor != NULL ? 1 : 0) + (g_context->tool == TOOL_TYPE_INPAINT ? 1 : 0) +
+		                 (g_context->viewport_mode == VIEWPORT_MODE_CAVITY ? 1 : 0);
 
 		// Get layers for this pass
 		make_mesh_layer_pass_count             = 1;
@@ -452,6 +461,25 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 		}
 		array_delete(layers);
 
+		if (last_pass && g_context->tool == TOOL_TYPE_INPAINT) {
+			// Inpaint mask painted in red over the mesh
+			node_shader_add_texture(kong, "texinpaint_mask", "_texinpaint_mask");
+			node_shader_write_frag(kong, "float inpaint_m = sample_lod(texinpaint_mask, sampler_linear, tex_coord, 0.0).r;");
+			node_shader_write_frag(kong, "basecol = lerp(basecol, float3(1.0, 0.05, 0.05), inpaint_m * 0.65);");
+		}
+		if (last_pass && baked_ao != NULL) {
+			node_shader_add_texture(kong, "texbaked_ao", "_texbaked_ao");
+			node_shader_write_frag(kong, "occlusion = occlusion * sample_lod(texbaked_ao, sampler_linear, tex_coord, 0.0).r;");
+		}
+		if (last_pass && baked_nor != NULL) {
+			// Layer normals are detail on top of the baked normal, whiteout blend
+			node_shader_add_texture(kong, "texbaked_nor", "_texbaked_nor");
+			node_shader_write_frag(kong, "float3 baked_n = sample_lod(texbaked_nor, sampler_linear, tex_coord, 0.0).rgb * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);");
+			node_shader_write_frag(kong, "if (dot(baked_n, baked_n) < 0.25) { baked_n = float3(0.0, 0.0, 1.0); }"); // Empty texels
+			node_shader_write_frag(kong, "float3 layer_n = ntex * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);");
+			node_shader_write_frag(kong, "ntex = normalize(float3(baked_n.xy + layer_n.xy, baked_n.z * layer_n.z)) * float3(0.5, 0.5, 0.5) + float3(0.5, 0.5, 0.5);");
+		}
+
 		if (last_pass && g_context->draw_texels) {
 			node_shader_add_constant(kong, "float2 texpaint_size", "_texpaint_size");
 			node_shader_write_frag(kong, string_tmp("float2 texel0 = %s * constants.texpaint_size * 0.01;", tex_coord_layer));
@@ -498,11 +526,28 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 			                             &con_mesh->data->_->vertex_shader_size, &con_mesh->data->_->fragment_shader_size);
 			return con_mesh;
 		}
-		kong->frag_vvec = true;
-		node_shader_write_frag(kong, "float3x3 TBN = cotangent_frame(n, vvec, tex_coord);");
-		node_shader_write_frag(kong, "n = ntex * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);");
-		node_shader_write_frag(kong, "n.y = -n.y;");
-		node_shader_write_frag(kong, "n = normalize(TBN * n);");
+		kong->frag_vvec = true; // View vector, also used by the lighting below
+		if (has_tang) {
+			// MikkTSpace frame, as in other bakers and engines: bitangent rebuilt from the interpolated normal and tangent
+			node_shader_add_constant(kong, "float3x3 N", "_normal_matrix");
+			node_shader_add_out(kong, "float4 wtangent");
+			node_shader_write_vert(kong, "output.wtangent = float4(constants.N * input.tang.xyz, input.tang.w);");
+			node_shader_write_frag(kong, "float3 tang_t = input.wtangent.xyz;");
+			node_shader_write_frag(kong, "float tang_s = 1.0;");
+			node_shader_write_frag(kong, "if (input.wtangent.w < 0.0) { tang_s = -1.0; }");
+			node_shader_write_frag(kong, "float3 tang_b = cross(n, tang_t) * tang_s;");
+			node_shader_write_frag(kong, "float3 nt = ntex * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);");
+			node_shader_write_frag(kong, "nt.y = -nt.y;");
+			// Explicit sum, a float3x3 built from rows would transpose the frame
+			node_shader_write_frag(kong, "n = normalize(tang_t * nt.x + tang_b * nt.y + n * nt.z);");
+		}
+		else {
+			// Unnormalized eye_dir varies as -position, vvec would bend the frame with the view angle
+			node_shader_write_frag(kong, "float3x3 TBN = cotangent_frame(n, input.eye_dir, tex_coord);");
+			node_shader_write_frag(kong, "n = ntex * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);");
+			node_shader_write_frag(kong, "n.y = -n.y;");
+			node_shader_write_frag(kong, "n = normalize(TBN * n);");
+		}
 
 		if (g_context->viewport_mode == VIEWPORT_MODE_LIT || g_context->viewport_mode == VIEWPORT_MODE_PATH_TRACE) {
 			node_shader_write_frag(kong, "basecol = pow(basecol, float3(2.2, 2.2, 2.2));");
@@ -567,10 +612,10 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 		else if (g_context->viewport_mode == VIEWPORT_MODE_BASE_COLOR && g_context->layer->paint_base) {
 			node_shader_write_frag(kong, "output[1] = float4(basecol, 1.0);");
 		}
-		else if (g_context->viewport_mode == VIEWPORT_MODE_NORMAL_MAP && g_context->layer->paint_nor) {
+		else if (g_context->viewport_mode == VIEWPORT_MODE_NORMAL_MAP && (g_context->layer->paint_nor || baked_nor != NULL)) {
 			node_shader_write_frag(kong, "output[1] = float4(ntex.rgb, 1.0);");
 		}
-		else if (g_context->viewport_mode == VIEWPORT_MODE_OCCLUSION && g_context->layer->paint_occ) {
+		else if (g_context->viewport_mode == VIEWPORT_MODE_OCCLUSION && (g_context->layer->paint_occ || baked_ao != NULL)) {
 			node_shader_write_frag(kong, "output[1] = float4(float3(occlusion, occlusion, occlusion), 1.0);");
 		}
 		else if (g_context->viewport_mode == VIEWPORT_MODE_ROUGHNESS && g_context->layer->paint_rough) {
@@ -597,6 +642,20 @@ node_shader_context_t *make_mesh_run(material_t *data, i32 layer_pass) {
 		}
 		else if (g_context->viewport_mode == VIEWPORT_MODE_TEXCOORD) {
 			node_shader_write_frag(kong, string_tmp("output[1] = float4(%s, 0.0, 1.0);", tex_coord_layer));
+		}
+		else if (g_context->viewport_mode == VIEWPORT_MODE_CAVITY) {
+			if (box_bake_mesh_map_image("cavity") != NULL) {
+				node_shader_add_texture(kong, "texbaked_cavity", "_texbaked_cavity");
+				node_shader_write_frag(kong, "float cav = sample_lod(texbaked_cavity, sampler_linear, tex_coord, 0.0).r;");
+				node_shader_write_frag(kong, "output[1] = float4(cav, cav, cav, 1.0);");
+			}
+			else {
+				node_shader_write_frag(kong, "output[1] = float4(0.5, 0.5, 0.5, 1.0);"); // Not baked yet
+			}
+		}
+		else if (g_context->viewport_mode == VIEWPORT_MODE_NORMAL_WORLD) {
+			// Continuous across uv seams when the normal map matches the viewport tangent frame
+			node_shader_write_frag(kong, "output[1] = float4(n * float3(0.5, 0.5, 0.5) + float3(0.5, 0.5, 0.5), 1.0);");
 		}
 		else if (g_context->viewport_mode == VIEWPORT_MODE_OBJECT_NORMAL) {
 			kong->frag_nattr = true;

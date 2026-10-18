@@ -847,6 +847,113 @@ mesh_data_t *mesh_data_get_raw_by_name(any_array_t *datas, char *name) {
 	return NULL;
 }
 
+// MikkTSpace tangents, the standard tangent space of baked normal maps
+
+#include "libs/mikktspace.h"
+
+typedef struct mesh_data_tangent_ctx {
+	i16_array_t *pos;
+	i16_array_t *nor;
+	i16_array_t *tex;
+	u32_array_t *ind;
+	f32         *sum; // Tangent xyz and sign per vertex
+} mesh_data_tangent_ctx_t;
+
+static int mesh_data_tangent_faces(const SMikkTSpaceContext *c) {
+	return ((mesh_data_tangent_ctx_t *)c->m_pUserData)->ind->length / 3;
+}
+
+static int mesh_data_tangent_face_verts(const SMikkTSpaceContext *c, const int face) {
+	return 3;
+}
+
+static u32 mesh_data_tangent_index(const SMikkTSpaceContext *c, int face, int vert) {
+	return ((mesh_data_tangent_ctx_t *)c->m_pUserData)->ind->buffer[face * 3 + vert];
+}
+
+static void mesh_data_tangent_position(const SMikkTSpaceContext *c, float out[], const int face, const int vert) {
+	mesh_data_tangent_ctx_t *t = c->m_pUserData;
+	u32                      i = mesh_data_tangent_index(c, face, vert);
+	out[0]                     = t->pos->buffer[i * 4] / 32767.0f;
+	out[1]                     = t->pos->buffer[i * 4 + 1] / 32767.0f;
+	out[2]                     = t->pos->buffer[i * 4 + 2] / 32767.0f;
+}
+
+static void mesh_data_tangent_normal(const SMikkTSpaceContext *c, float out[], const int face, const int vert) {
+	mesh_data_tangent_ctx_t *t = c->m_pUserData;
+	u32                      i = mesh_data_tangent_index(c, face, vert);
+	out[0]                     = t->nor->buffer[i * 2] / 32767.0f;
+	out[1]                     = t->nor->buffer[i * 2 + 1] / 32767.0f;
+	out[2]                     = t->pos->buffer[i * 4 + 3] / 32767.0f;
+}
+
+static void mesh_data_tangent_texcoord(const SMikkTSpaceContext *c, float out[], const int face, const int vert) {
+	mesh_data_tangent_ctx_t *t = c->m_pUserData;
+	u32                      i = mesh_data_tangent_index(c, face, vert);
+	out[0]                     = t->tex->buffer[i * 2] / 32767.0f;
+	out[1]                     = t->tex->buffer[i * 2 + 1] / 32767.0f;
+}
+
+static void mesh_data_tangent_set(const SMikkTSpaceContext *c, const float tangent[], const float sign, const int face, const int vert) {
+	mesh_data_tangent_ctx_t *t = c->m_pUserData;
+	f32                     *o = t->sum + mesh_data_tangent_index(c, face, vert) * 4;
+	o[0] += tangent[0];
+	o[1] += tangent[1];
+	o[2] += tangent[2];
+	o[3] += sign;
+}
+
+// Appends a "tang" array (xyz tangent, w bitangent sign) after the other vertex arrays,
+// so shaders not reading it keep the same attribute offsets
+static void mesh_data_add_tangents(mesh_data_t *raw) {
+	vertex_array_t *pos = mesh_data_get_vertex_array(raw, "pos");
+	vertex_array_t *nor = mesh_data_get_vertex_array(raw, "nor");
+	vertex_array_t *tex = mesh_data_get_vertex_array(raw, "tex");
+	if (pos == NULL || nor == NULL || tex == NULL || raw->index_array == NULL || raw->index_array->length < 3 ||
+	    mesh_data_get_vertex_array(raw, "tang") != NULL) {
+		return;
+	}
+	i32 count = pos->values->length / 4;
+	if (nor->values->length / 2 != count || tex->values->length / 2 != count) {
+		return;
+	}
+	mesh_data_tangent_ctx_t ctx = {.pos = pos->values, .nor = nor->values, .tex = tex->values, .ind = raw->index_array};
+	ctx.sum                     = calloc(count * 4, sizeof(f32));
+	SMikkTSpaceInterface iface  = {
+	     .m_getNumFaces          = mesh_data_tangent_faces,
+	     .m_getNumVerticesOfFace = mesh_data_tangent_face_verts,
+	     .m_getPosition          = mesh_data_tangent_position,
+	     .m_getNormal            = mesh_data_tangent_normal,
+	     .m_getTexCoord          = mesh_data_tangent_texcoord,
+	     .m_setTSpaceBasic       = mesh_data_tangent_set,
+    };
+	SMikkTSpaceContext mikk = {.m_pInterface = &iface, .m_pUserData = &ctx};
+	if (!genTangSpaceDefault(&mikk)) {
+		free(ctx.sum);
+		return;
+	}
+	i16_array_t *tang = i16_array_create(count * 4);
+	for (i32 i = 0; i < count; ++i) {
+		f32 *t = ctx.sum + i * 4;
+		f32  l = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+		if (l > 0.0f) {
+			t[0] /= l;
+			t[1] /= l;
+			t[2] /= l;
+		}
+		tang->buffer[i * 4]     = (i16)(t[0] * 32767.0f);
+		tang->buffer[i * 4 + 1] = (i16)(t[1] * 32767.0f);
+		tang->buffer[i * 4 + 2] = (i16)(t[2] * 32767.0f);
+		tang->buffer[i * 4 + 3] = t[3] < 0.0f ? -32767 : 32767;
+	}
+	free(ctx.sum);
+	vertex_array_t *va = calloc(1, sizeof(vertex_array_t));
+	va->values         = tang;
+	va->attrib         = "tang";
+	va->data           = "short4norm";
+	any_array_push(raw->vertex_arrays, va);
+}
+
 mesh_data_t *mesh_data_create(mesh_data_t *raw) {
 	raw->_ = calloc(1, sizeof(mesh_data_runtime_t));
 	if (raw->scale_pos == 0.0) {
@@ -855,6 +962,7 @@ mesh_data_t *mesh_data_create(mesh_data_t *raw) {
 	if (raw->scale_tex == 0.0) {
 		raw->scale_tex = 1.0;
 	}
+	// mesh_data_add_tangents(raw); // Disabled: the MikkTSpace viewport path still darkens the lighting, see RECAP.md
 	raw->_->structure = mesh_data_get_vertex_struct(raw->vertex_arrays);
 	mesh_data_build(raw);
 	return raw;
@@ -2395,6 +2503,7 @@ void scene_gen_transform(obj_t *object, transform_t *transform) {
 // ╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚═╝  ╚═╝    ╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
 
 #include "const_data.h"
+#include "libs/mikktspace.c"
 
 void           _gpu_begin(gpu_texture_t *render_target, any_array_t *additional, gpu_texture_t *depth_buffer, gpu_clear_t flags, unsigned color, float depth);
 gpu_texture_t *gpu_create_render_target(i32 width, i32 height, i32 format);

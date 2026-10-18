@@ -779,6 +779,12 @@ void render_path_paint_draw_cursor_decal(f32 mx, f32 my, f32 radius, f32 opacity
 void render_path_paint_commands_cursor() {
 	bool        decal_mask = context_is_decal_mask();
 	tool_type_t tool       = g_context->tool;
+	if (tool == TOOL_TYPE_INPAINT) {
+		if (base_ui_enabled && !base_is_dragging && context_in_3d_view()) {
+			render_path_paint_draw_cursor(g_context->paint_vec.x, 1.0 - g_context->paint_vec.y, g_context->brush_radius / 3.4, 1.0, 0.3, 0.3);
+		}
+		return;
+	}
 	if (tool != TOOL_TYPE_BRUSH && tool != TOOL_TYPE_ERASER && tool != TOOL_TYPE_CLONE && tool != TOOL_TYPE_BLUR && tool != TOOL_TYPE_PARTICLE &&
 	    !context_is_decal() && !decal_mask) {
 		return;
@@ -817,6 +823,9 @@ void render_path_paint_commands_cursor() {
 }
 
 bool render_path_paint_paint_enabled() {
+	if (g_context->tool == TOOL_TYPE_INPAINT) {
+		return false; // Paints its own mask, see util_inpaint.c
+	}
 	if (g_context->tool == TOOL_TYPE_BAKE) {
 		return true;
 	}

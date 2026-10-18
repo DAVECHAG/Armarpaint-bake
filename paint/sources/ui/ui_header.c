@@ -18,6 +18,8 @@ void ui_header_render_ui() {
 	}
 	ui_header_h = math_floor(ui_header_h * UI_SCALE());
 
+	ui_brush_bar_update();
+
 	if (!g_config->header_pinned) {
 		return;
 	}
@@ -254,7 +256,13 @@ void ui_header_draw_tool_properties() {
 	         g_context->tool == TOOL_TYPE_DECAL || g_context->tool == TOOL_TYPE_TEXT || g_context->tool == TOOL_TYPE_CLONE ||
 	         g_context->tool == TOOL_TYPE_BLUR || g_context->tool == TOOL_TYPE_PARTICLE) {
 		bool decal_mask = context_is_decal_mask();
-		if (g_context->tool != TOOL_TYPE_FILL) {
+		// Pinned header: main settings in the bar, the rest in the advanced options popup
+		bool main_bar = !ui_brush_bar_advanced;
+		bool advanced = !g_config->header_pinned || ui_brush_bar_advanced;
+		if (g_config->header_pinned && main_bar) {
+			ui_brush_bar_draw();
+		}
+		if (g_context->tool != TOOL_TYPE_FILL && main_bar) {
 			if (decal_mask) {
 				ui_slider(&g_context->brush_decal_mask_radius, tr("Radius"), 0.01, 2.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
 				if (g_ui->is_hovered) {
@@ -285,12 +293,13 @@ void ui_header_draw_tool_properties() {
 			}
 		}
 
-		if (g_context->tool == TOOL_TYPE_DECAL || g_context->tool == TOOL_TYPE_TEXT) {
+		if ((g_context->tool == TOOL_TYPE_DECAL || g_context->tool == TOOL_TYPE_TEXT) && advanced) {
 			ui_slider(&g_context->brush_scale_x, tr("Scale X"), 0.01, 2.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
 		}
 
-		if (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_FILL || g_context->tool == TOOL_TYPE_DECAL ||
-		    g_context->tool == TOOL_TYPE_TEXT) {
+		if ((g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_FILL || g_context->tool == TOOL_TYPE_DECAL ||
+		     g_context->tool == TOOL_TYPE_TEXT) &&
+		    advanced) {
 			ui_slider(&g_context->brush_scale, tr("UV Scale"), 0.01, 5.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
 			if (ui_item_changed()) {
 				if (g_context->tool == TOOL_TYPE_DECAL || g_context->tool == TOOL_TYPE_TEXT) {
@@ -317,8 +326,10 @@ void ui_header_draw_tool_properties() {
 			}
 		}
 
-		ui_slider(&g_context->brush_opacity, tr("Opacity"), 0.0, 1.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
-		if (g_ui->is_hovered) {
+		if (main_bar) {
+			ui_slider(&g_context->brush_opacity, tr("Opacity"), 0.0, 1.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
+		}
+		if (main_bar && g_ui->is_hovered) {
 			any_map_t *vars = any_map_create();
 			any_map_set(vars, "brush_opacity", any_map_get(g_keymap, "brush_opacity"));
 			ui_tooltip(vtr("Hold {brush_opacity} and move mouse to the left to decrease the opacity\nHold {brush_opacity} and move mouse to the right to "
@@ -327,12 +338,13 @@ void ui_header_draw_tool_properties() {
 			map_free(vars);
 		}
 
-		if (g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER || g_context->tool == TOOL_TYPE_CLONE || decal_mask ||
-		    g_context->tool == TOOL_TYPE_PARTICLE) {
+		if ((g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_ERASER || g_context->tool == TOOL_TYPE_CLONE || decal_mask ||
+		     g_context->tool == TOOL_TYPE_PARTICLE) &&
+		    main_bar) {
 			ui_slider(&g_context->brush_hardness, tr("Hardness"), 0.0, 1.0, true, 100.0, true, UI_ALIGN_RIGHT, true);
 		}
 
-		if (g_context->tool != TOOL_TYPE_ERASER && g_config->tools != TOOLS_SCULPT) {
+		if (g_context->tool != TOOL_TYPE_ERASER && g_config->tools != TOOLS_SCULPT && advanced) {
 			string_array_t *brush_blending_combo = any_array_create_from_raw_tmp(
 			    (void *[]){
 			        tr("Mix"),
@@ -361,7 +373,7 @@ void ui_header_draw_tool_properties() {
 			}
 		}
 
-		if ((g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_FILL) && g_config->tools != TOOLS_SCULPT) {
+		if ((g_context->tool == TOOL_TYPE_BRUSH || g_context->tool == TOOL_TYPE_FILL) && g_config->tools != TOOLS_SCULPT && advanced) {
 			string_array_t *texcoord_combo = any_array_create_from_raw_tmp(
 			    (void *[]){
 			        tr("UV Map"),
@@ -375,7 +387,7 @@ void ui_header_draw_tool_properties() {
 			}
 		}
 
-		if (g_context->tool == TOOL_TYPE_TEXT) {
+		if (g_context->tool == TOOL_TYPE_TEXT && main_bar) {
 			if (g_context->text_tool_text == NULL) {
 				g_context->text_tool_text = "";
 			}
@@ -395,19 +407,19 @@ void ui_header_draw_tool_properties() {
 			}
 		}
 
-		if (g_context->tool == TOOL_TYPE_PARTICLE) {
+		if (g_context->tool == TOOL_TYPE_PARTICLE && main_bar) {
 			if (ui_button(tr("Particle"), UI_ALIGN_CENTER, "")) {
 				ui_menu_draw(&ui_header_particle_menu_draw, -1, -1);
 			}
 		}
 
-		if (g_context->tool == TOOL_TYPE_CLONE) {
+		if (g_context->tool == TOOL_TYPE_CLONE && main_bar) {
 			if (ui_button(g_context->clone_set_source ? tr("Setting Source") : tr("Set Source"), UI_ALIGN_CENTER, "")) {
 				g_context->clone_set_source = !g_context->clone_set_source;
 			}
 		}
 
-		if (g_context->tool == TOOL_TYPE_BLUR && g_config->tools != TOOLS_SCULPT) {
+		if (g_context->tool == TOOL_TYPE_BLUR && g_config->tools != TOOLS_SCULPT && main_bar) {
 			string_array_t *blur_type_combo = any_array_create_from_raw_tmp(
 			    (void *[]){
 			        tr("Blur"),
@@ -421,6 +433,9 @@ void ui_header_draw_tool_properties() {
 		}
 
 		if (g_context->tool == TOOL_TYPE_FILL) {
+			if (!main_bar) {
+				return;
+			}
 			string_array_t *fill_mode_combo = any_array_create_from_raw_tmp(
 			    (void *[]){
 			        tr("Object"),
@@ -442,6 +457,15 @@ void ui_header_draw_tool_properties() {
 				make_material_parse_paint_material(true);
 				make_material_parse_mesh_material();
 			}
+		}
+		else if (ui_brush_bar_advanced) {
+			ui_check(&g_context->xray, tr("X-Ray"), "");
+			if (ui_item_changed()) {
+				make_material_parse_paint_material(true);
+			}
+		}
+		else if (g_config->header_pinned && !g_config->touch_ui) {
+			ui_brush_bar_draw_symmetry();
 		}
 		else {
 			i32  _w           = g_ui->_w;
@@ -505,6 +529,9 @@ void ui_header_draw_tool_properties() {
 				make_material_parse_paint_material(true);
 			}
 		}
+	}
+	else if (g_context->tool == TOOL_TYPE_INPAINT) {
+		inpaint_draw_header();
 	}
 	else if (g_context->tool == TOOL_TYPE_SELECT) {
 		g_ui->enabled = g_context->select_active;

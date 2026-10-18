@@ -90,6 +90,7 @@ any_map_t *keymap_get_default() {
 	any_map_set(keymap, "decal_mask", "ctrl");
 	any_map_set(keymap, "brush_camera_align", "z");
 	any_map_set(keymap, "grid_snap", "x");
+	any_map_set(keymap, "swap_colors", "shift+x");
 	any_map_set(keymap, "select_material", "shift+number");
 	any_map_set(keymap, "select_layer", "alt+number");
 	any_map_set(keymap, "brush_opacity", "shift+f");
@@ -106,6 +107,7 @@ any_map_t *keymap_get_default() {
 	any_map_set(keymap, "tool_picker", "v");
 	any_map_set(keymap, "tool_cursor", "r");
 	any_map_set(keymap, "tool_select", "m");
+	any_map_set(keymap, "tool_inpaint", "i");
 	any_map_set(keymap, "tool_material", "");
 	any_map_set(keymap, "swap_brush_eraser", "");
 	return keymap;

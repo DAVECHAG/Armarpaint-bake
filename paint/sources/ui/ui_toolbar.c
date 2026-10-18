@@ -9,12 +9,18 @@ i32 _ui_toolbar_bottom = 0;
 void ui_toolbar_init() {}
 
 bool ui_toolbar_tool_visible(i32 tool) {
+	if (tool == TOOL_TYPE_BAKE) {
+		return false; // Used by the Bake Texture node only
+	}
 	if (g_config->tools == TOOLS_SCULPT) {
 		// Brush is replaced by the sculpt mode icons
 		return tool != TOOL_TYPE_BRUSH && tool != TOOL_TYPE_PARTICLE && tool != TOOL_TYPE_COLORID && tool != TOOL_TYPE_PICKER && tool != TOOL_TYPE_MATERIAL;
 	}
 	if (g_config->tools == TOOLS_OBJECT) {
 		return tool == TOOL_TYPE_CURSOR;
+	}
+	if (g_config->tools == TOOLS_SCULPT && tool == TOOL_TYPE_INPAINT) {
+		return false;
 	}
 	return true;
 }
@@ -150,7 +156,8 @@ void ui_toolbar_draw_tool(i32 tool, gpu_texture_t *img, i32 icon_accent) {
 	i32  tile_x  = tile_y % 2 == 0 ? tool % 12 : (11 - (tool % 12));
 	i32  _y      = g_ui->_y;
 
-	ui_state_t image_state = ui_toolbar_draw_icon(g_context->tool == tool, visible, tile_y * 12 + tile_x, img, icon_accent);
+	i32        tile        = tool == TOOL_TYPE_INPAINT ? ICON_ERASE : tile_y * 12 + tile_x;
+	ui_state_t image_state = ui_toolbar_draw_icon(g_context->tool == tool, visible, tile, img, icon_accent);
 
 	if (image_state == UI_STATE_STARTED && visible) {
 		_ui_toolbar_i = tool;
@@ -170,7 +177,7 @@ void ui_toolbar_draw_tool(i32 tool, gpu_texture_t *img, i32 icon_accent) {
 			*c = tolower(*c);
 		}
 		char *key = any_map_get(g_keymap, key_name);
-		if (!string_equals(key, "")) {
+		if (key != NULL && !string_equals(key, "")) {
 			tooltip = string_tmp("%s (%s)", tooltip, key);
 		}
 		char *extra = ui_toolbar_tooltip_extras->buffer[tool];
