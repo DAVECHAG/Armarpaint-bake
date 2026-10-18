@@ -1,7 +1,7 @@
 # Bake system, Inpaint tool and brush bar
 
 This branch (`feature/bake-dialog`) adds a dedicated mesh map baker to ArmorPaint, a tool to repair bake artifacts, and a reworked brush toolbar. It is an unofficial fork made by an ArmorPaint user; it has not been reviewed by the ArmorPaint developer.
-The code was written with Claude Code (Anthropic’s AI coding assistant), so it surely does not follow your conventions everywher
+The code was written with Claude Code (Anthropic’s AI coding assistant)
 
 ## Bake Mesh Maps
 
