@@ -1,11 +1,11 @@
-![](docs/bake/Armorpaint_bake.png)
+<img width="1558" height="876" alt="image" src="https://github.com/user-attachments/assets/3f12e047-533f-48b2-9812-27c7fba4f8f3" />
 
 armorpaint
 ==============
 
 [ArmorPaint](https://armorpaint.org) is a software for 3D PBR texture painting - check out the [manual](https://armorpaint.org/manual).
 
-**This fork** adds a mesh map baker (13 maps, GPU or CPU, high poly projection, Cavity), an Inpaint tool to repair bake artifacts and a new brush bar: see [docs/bake](docs/bake/README.md).
+**This fork** adds a mesh map baker (13 maps, GPU or CPU, high poly projection, Cavity, normal map, ambient occlusion, height etc...), an Inpaint tool to repair bake artifacts and a new brush bar: see [docs/bake](docs/bake/README.md).
 
 *Note 1: This repository is aimed at developers and may not be stable. Distributed binaries are [paid](https://armorpaint.org/download) to help with the project funding. All of the development is happening here in order to make it accessible to everyone. Thank you for support!*
 
