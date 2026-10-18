@@ -1,4 +1,4 @@
-![](Armorpaint_bake.png)
+![](docs/bake/Armorpaint_bake.png)
 
 armorpaint
 ==============
